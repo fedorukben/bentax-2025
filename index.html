@@ -20,7 +20,7 @@
   --mono:"SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%}
+html,body{margin:0;min-height:100%}
 body{font-family:var(--font);color:var(--ink);background:var(--bg);font-size:14px;line-height:1.35;-webkit-font-smoothing:antialiased}
 button,input,select,textarea{font:inherit;color:inherit}
 button{cursor:pointer}
@@ -669,6 +669,15 @@ const C = {
   onReductionBasic: 294, onReductionDependant: 544,
   lift: { max: 875, rate: 0.0505, indThr: 32500, famThr: 65000, reduce: 0.05 },
   onMinTaxFactor: 0.3367,
+  // ON479 (2025)
+  onPolTiers: [500.05, 1666.82, 3792.22], onPolMax: 1666.82,
+  transitMax: 3000, transitRate: 0.15,
+  careHome: { max: 6000, rate: 0.25, thr: 35000, reduce: 0.05 },
+  // Ontario Trillium Benefit, July 2026 – June 2027 (based on the 2025 return)
+  otb: { energyMax: 290, ptCap: 944, ptAdd: 73, ptCapSr: 581, ptAddSr: 617, studentRes: 25,
+         thrSingle: 29047, thrFamily: 36309, thrSrSingle: 36309, thrSrFamily: 43571, reduce: 0.02,
+         ostc: 378, ostcSingle: 29047, ostcFamily: 36309, ostcReduce: 0.04,
+         noecSingle: 189, noecFamily: 290, noecThrSingle: 50833, noecThrFamily: 65356, noecReduce: 0.01 },
 };
 
 /* ------------------------------------------------------------------ */
@@ -700,6 +709,45 @@ function healthPremium(ti) {
   return 900;
 }
 
+// T4A(P) box 20 already includes boxes 14–19; fall back to their total when box 20 was left blank
+function cppTaxable(b) {
+  const has20 = b['20'] !== undefined && b['20'] !== null && b['20'] !== '';
+  return has20 ? (+b['20'] || 0) : ['14', '15', '16', '17', '18', '19'].reduce((t, k) => t + (+b[k] || 0), 0);
+}
+
+// Ontario political contribution credit (2025 tiers, refundable on ON479)
+function onPoliticalCredit(c) {
+  c = pos(c); const [a, b, d] = C.onPolTiers;
+  let cr = 0.75 * Math.min(c, a);
+  if (c > a) cr += 0.5 * (Math.min(c, b) - a);
+  if (c > b) cr += (1 / 3) * (Math.min(c, d) - b);
+  return Math.min(C.onPolMax, cr);
+}
+const signedSum = (rows, boxes) => rows.reduce((t, b) => t + boxes.reduce((u, k) => u + (+b[k] || 0), 0), 0);
+// T4RSP: boxes 16, 18, 20, 22, 26, 28, 34 → line 12900; a negative box 28 → line 23200
+function rrsp(c) {
+  let inc = 0, neg = 0;
+  c.slipRows('T4RSP').forEach(b => {
+    ['16', '18', '20', '22', '26', '34'].forEach(k => inc += (+b[k] || 0));
+    const x = +b['28'] || 0; if (x >= 0) inc += x; else neg += -x;
+  });
+  return { inc, neg };
+}
+// T4RIF: boxes 16 and 22 → line 11500 if 65+ (or received on a spouse's death), otherwise line 13000;
+// box 18 (and box 20) → line 13000; a negative box 22 → line 23200
+function rif(c) {
+  const sr = c.m.age65 || c.m.rifSpouseDeath; let pen = 0, oth = 0, neg = 0;
+  c.slipRows('T4RIF').forEach(b => {
+    const main = (+b['16'] || 0) + Math.max(0, +b['22'] || 0);
+    if (sr) pen += main; else oth += main;
+    oth += (+b['18'] || 0) + (+b['20'] || 0);
+    if ((+b['22'] || 0) < 0) neg += -(+b['22']);
+  });
+  return { pen, oth, neg };
+}
+// T5008 gain or loss per slip: proceeds (21) minus cost (20) minus outlays
+const t5008Gain = c => c.slipRows('T5008').reduce((t, b) => t + (+b['21'] || 0) - (+b['20'] || 0) - (+b['oe'] || 0), 0);
+
 function politicalCredit(c) {
   c = pos(c);
   let cr = 0.75 * Math.min(c, 400);
@@ -727,7 +775,7 @@ const SLIPS = [
     ['131', 'Registered disability savings plan']] },
   { id: 'T4AP', title: 'T4A(P) – Statement of Canada Pension Plan Benefits', payer: 'Payer', boxes: [
     ['14', 'Retirement benefit'], ['15', 'Survivor benefit'], ['16', 'Disability benefit'], ['17', 'Child benefit'],
-    ['18', 'Death benefit'], ['19', 'Post-retirement benefit'], ['20', 'Taxable CPP benefits'], ['22', 'Income tax deducted']] },
+    ['18', 'Death benefit'], ['19', 'Post-retirement benefit'], ['20', 'Taxable CPP benefits (total of boxes 14 to 19)'], ['22', 'Income tax deducted']] },
   { id: 'T4AOAS', title: 'T4A(OAS) – Statement of Old Age Security', payer: 'Payer', boxes: [
     ['18', 'Taxable pension paid'], ['20', 'Overpayment recovered'], ['21', 'Net supplements paid'], ['22', 'Income tax deducted']] },
   { id: 'T4E', title: 'T4E – Statement of Employment Insurance and Other Benefits', payer: "Payer's name", boxes: [
@@ -743,7 +791,45 @@ const SLIPS = [
     ['24', 'Number of part-time months', 'int'], ['25', 'Number of full-time months', 'int'], ['26', 'Eligible tuition fees']] },
   { id: 'RC210', title: 'RC210 – Advanced Canada Workers Benefit (ACWB) Statement', payer: 'Payer', boxes: [
     ['10', 'Total basic advanced Canada workers benefit'], ['11', 'Total advanced Canada workers benefit disability supplement']] },
-  { id: 'DON', title: 'Charitable Donations Tax Receipts', payer: "Charity's name", boxes: [['amt', 'Eligible amount of gift']] },
+  { id: 'T4RSP', title: 'T4RSP – Statement of RRSP Income', payer: "Payer's name", boxes: [
+    ['16', 'Annuity payments'], ['18', 'Refund of premiums'], ['20', 'Refund of excess contributions'],
+    ['22', 'Withdrawal and commutation payments'], ['25', "LLP withdrawal (not income)"], ['26', 'Amounts deemed received on deregistration'],
+    ['27', "HBP withdrawal (not income)"], ['28', 'Other income or deductions'], ['30', 'Income tax deducted'],
+    ['34', 'Amounts deemed received on death'], ['35', 'Transfers on breakdown of marriage (not income)']] },
+  { id: 'T4RIF', title: 'T4RIF – Statement of Income from a Registered Retirement Income Fund', payer: "Payer's name", boxes: [
+    ['16', 'Taxable amounts'], ['18', 'Amounts deemed received – deceased'], ['20', 'Amounts deemed received – deregistration'],
+    ['22', 'Other income or deductions'], ['24', 'Excess amount (included in box 16)'], ['28', 'Income tax deducted'],
+    ['35', 'Transfers on breakdown of marriage (not income)']] },
+  { id: 'T4FHSA', title: 'T4FHSA – First Home Savings Account Statement', payer: 'Issuer', boxes: [
+    ['18', 'Contributions'], ['20', 'Qualifying withdrawals (not income)'], ['22', 'Taxable withdrawals'],
+    ['24', 'FHSA beneficiary distributions received'], ['26', 'Amount deemed received on FHSA cessation'], ['28', 'Security for a loan'],
+    ['30', 'Income tax deducted'], ['32', 'RRSP transfers in'], ['34', 'Spousal RRSP transfers in'],
+    ['36', 'Designated – RRSP/RRIF transfers out'], ['38', 'Designated – withdrawals']] },
+  { id: 'T5008', title: 'T5008 – Statement of Securities Transactions', payer: 'Payer / security', boxes: [
+    ['21', 'Proceeds of disposition or settlement amount'], ['20', 'Cost or book value (check against your ACB)'], ['oe', 'Outlays and expenses (commissions, from your records)']] },
+  { id: 'T5007', title: 'T5007 – Statement of Benefits', payer: 'Payer', boxes: [
+    ['10', "Workers' compensation benefits"], ['11', 'Social assistance payments or provincial or territorial supplements']] },
+  { id: 'T5013', title: 'T5013 – Statement of Partnership Income', payer: 'Partnership', boxes: [
+    ['101', "Limited partner's farming income (loss)"], ['104', "Limited partner's business income (loss)"], ['107', "Limited partner's rental income (loss)"],
+    ['110', 'Canadian and foreign net rental income (loss)'], ['116', 'Business income (loss)'], ['117', 'Gross Canadian and foreign rental income'],
+    ['118', 'Gross business income'], ['128', 'Interest from Canadian sources'], ['130', 'Taxable amount of dividends other than eligible'],
+    ['133', 'Taxable amount of eligible dividends'], ['135', 'Foreign dividend and interest income'], ['146', 'Other investment income'],
+    ['151', 'Capital gains (losses)']] },
+  { id: 'T4PS', title: 'T4PS – Statement of Employee Profit-Sharing Plan Allocations and Payments', payer: "Employer's name", boxes: [
+    ['24', 'Actual amount of dividends other than eligible'], ['25', 'Taxable amount of dividends other than eligible'],
+    ['30', 'Actual amount of eligible dividends'], ['31', 'Taxable amount of eligible dividends'], ['34', 'Capital gains or losses'],
+    ['35', 'Other employment income'], ['36', 'Total amount forfeited due to withdrawal from plan'], ['37', 'Foreign non-business income'],
+    ['38', 'Foreign capital gains or losses'], ['39', 'Foreign non-business income tax'], ['41', 'Employee profit sharing plan contributions']] },
+  { id: 'T4ARCA', title: 'T4A-RCA – Distributions from a Retirement Compensation Arrangement', payer: 'Custodian', boxes: [
+    ['14', 'Refund of employee contributions'], ['16', 'Distributions'], ['17', 'Distributions eligible for pension income splitting (in box 16)'],
+    ['18', 'Selling price of an interest in the RCA'], ['20', 'Other amounts'], ['22', 'Income tax deducted']] },
+  { id: 'T1204', title: 'T1204 – Government Service Contract Payments', payer: 'Federal department or agency', boxes: [
+    ['82', 'Service payments only'], ['84', 'Mixed services and goods payments']] },
+  { id: 'DON', title: 'Charitable Donations Tax Receipts', payer: "Charity's name", list: true, boxes: [['amt', 'Eligible amount of gift']] },
+  { id: 'RRSPR', title: 'RRSP Contribution Receipts', payer: 'Issuer', list: true, boxes: [['a', 'Mar 4 – Dec 31, 2025'], ['b', 'Jan 1 – Mar 2, 2026']] },
+  { id: 'POL', title: 'Political Contribution Receipts', payer: 'Party, association, or candidate', list: true, boxes: [['fed', 'Federal'], ['on', 'Ontario']] },
+  { id: 'RENT', title: 'Rent Paid in Ontario (2025)', payer: 'Address and landlord', list: true, boxes: [['amt', 'Rent paid']] },
+  { id: 'PTAX', title: 'Property Tax Paid in Ontario (2025)', payer: 'Address and municipality', list: true, boxes: [['amt', 'Property tax paid']] },
 ];
 
 /* ------------------------------------------------------------------ */
@@ -761,11 +847,12 @@ function buildForms() {
     F(null, '10105', 'Tax-exempt income for emergency services volunteers', null, { input: true, sub: true }),
     F(null, '10120', 'Commissions included on line 10100', c => c.s('T4', '42'), { sub: true }),
     I(null, '10130', 'Wage-loss replacement contributions', { sub: true }),
-    I(2, '10400', 'Other employment income'),
+    F(2, '10400', 'Other employment income', c => c.s('T4PS', '35') + c.v('T1.OEI')),
+    I(null, null, 'Other employment income not on a slip', { sub: true, k: 'OEI' }),
     F(3, '11300', 'Old age security (OAS) pension', c => c.s('T4AOAS', '18'), { req: 'T4A(OAS)' }),
-    F(4, '11400', 'CPP or QPP benefits', c => c.s('T4AP', '20')),
+    F(4, '11400', 'CPP or QPP benefits', c => c.slipRows('T4AP').reduce((t, b) => t + cppTaxable(b), 0), { req: 'T4A(P)', note: 'Box 20 of all T4A(P) slips. Where box 20 is blank, the total of boxes 14 to 19 is used.' }),
     F(null, '11410', 'Disability benefits included on line 11400', c => c.s('T4AP', '16'), { sub: true }),
-    F(5, '11500', 'Other pensions and superannuation', c => c.s('T4A', '016') + c.s('T4A', '024')),
+    F(5, '11500', 'Other pensions and superannuation', c => c.s('T4A', '016') + c.s('T4A', '024') + rif(c).pen, { note: 'Includes T4RIF boxes 16 and 22 when 65 or older (or received on a spouse\'s death).' }),
     I(6, '11600', 'Elected split-pension amount', { req: 'T1032' }),
     I(7, '11700', 'Universal child care benefit (UCCB)', { req: 'RC62' }),
     I(null, '11701', 'UCCB amount designated to a dependant', { sub: true }),
@@ -775,36 +862,38 @@ function buildForms() {
     F(9, '12000', 'Amount of dividends (eligible and other than eligible)', c => c.v('FW.D17') ),
     F(null, '12010', 'Amount of dividends (other than eligible)', c => c.v('FW.D18'), { sub: true }),
     F(10, '12100', 'Interest and other investment income', c => c.v('FW.I11')),
-    I(11, '12200', 'Net partnership income: limited or non-active partners only', { req: 'T5013' }),
+    F(11, '12200', 'Net partnership income: limited or non-active partners only', c => c.s('T5013', '104'), { note: 'T5013 box 104. Non-active partners: move box 116 here by override.' }),
     F(12, '12500', 'Registered disability savings plan (RDSP) income', c => c.s('T4A', '131')),
-    H('Rental income', 2),
-    I(null, '12599', 'Gross rental income', { sub: true, req: 'T776' }),
-    I(13, '12600', 'Net rental income', { req: 'T776' }),
+    H('Rental income', 4),
+    I(null, null, 'Your own rental properties – gross (T776)', { sub: true, k: 'RG', req: 'T776' }),
+    I(null, null, 'Your own rental properties – net (T776)', { sub: true, k: 'RN', req: 'T776' }),
+    F(null, '12599', 'Gross rental income', c => c.v('T1.RG') + c.s('T5013', '117'), { sub: true }),
+    F(13, '12600', 'Net rental income', c => c.v('T1.RN') + c.s('T5013', '107') + c.s('T5013', '110')),
     F(14, '12700', 'Taxable capital gains (if negative, enter "0")', c => pos(c.v('S3.19900')), { req: 'S3' }),
     H('Support payments received', 2),
     I(null, '12799', 'Total support payments received', { sub: true, req: 'P102' }),
     I(15, '12800', 'Taxable amount'),
-    I(16, '12900', 'Registered retirement savings plan (RRSP) income', { req: 'T4RSP' }),
-    I(17, '12905', 'Taxable first home savings account (FHSA) income', { req: 'T4FHSA' }),
-    I(18, '12906', 'Taxable FHSA income – other', { req: 'T4FHSA' }),
-    F(19, '13000', 'Other income', c => c.s('T4A', '018') + c.s('T4A', '028')),
+    F(16, '12900', 'Registered retirement savings plan (RRSP) income', c => rrsp(c).inc, { note: 'T4RSP boxes 16, 18, 20, 22, 26, 28 and 34.' }),
+    F(17, '12905', 'Taxable first home savings account (FHSA) income', c => c.s('T4FHSA', '22') + c.s('T4FHSA', '26')),
+    F(18, '12906', 'Taxable FHSA income – other', c => c.s('T4FHSA', '24') + c.s('T4FHSA', '28')),
+    F(19, '13000', 'Other income', c => c.s('T4A', '018') + c.s('T4A', '028') + rif(c).oth + ['14', '16', '18', '20'].reduce((t, k) => t + c.s('T4ARCA', k), 0)),
     F(20, '13010', "Taxable scholarships, fellowships, bursaries, and artists' project grants", c => c.s('T4A', '105'), { note: 'Box 105 amounts are exempt for students eligible for the education amount; override if so.' }),
     F(21, null, 'Add lines 1 to 20', c => sum(...['10100','10400','11300','11400','11500','11600','11700','11900','12000','12100','12200','12500','12600','12700','12800','12900','12905','12906','13000','13010'].map(k => c.v('T1.' + k))), { total: true }),
     H('Self-employment income', 10),
-    F(null, '13499', 'Business income – gross', c => c.s('T4A', '048'), { sub: true, req: 'T2125' }),
-    F(22, '13500', 'Business income – net', c => c.v('T1.13499'), { req: 'T2125', note: 'Defaults to gross; enter net after expenses.' }),
+    F(null, '13499', 'Business income – gross', c => c.s('T4A', '048') + c.s('T1204', '82') + c.s('T1204', '84') + c.s('T5013', '118'), { sub: true, req: 'T2125' }),
+    F(22, '13500', 'Business income – net', c => c.v('T1.13499') - c.s('T5013', '118') + c.s('T5013', '116'), { req: 'T2125', note: 'Defaults to gross slip income (T4A 048, T1204) plus T5013 box 116; enter net after expenses.' }),
     I(null, '13699', 'Professional income – gross', { sub: true }),
     F(23, '13700', 'Professional income – net', c => c.v('T1.13699')),
     F(null, '13899', 'Commission income – gross', c => c.s('T4A', '020'), { sub: true }),
     F(24, '13900', 'Commission income – net', c => c.v('T1.13899')),
     I(null, '14099', 'Farming income – gross', { sub: true }),
-    F(25, '14100', 'Farming income – net', c => c.v('T1.14099')),
+    F(25, '14100', 'Farming income – net', c => c.v('T1.14099') + c.s('T5013', '101')),
     I(null, '14299', 'Fishing income – gross', { sub: true }),
     F(26, '14300', 'Fishing income – net', c => c.v('T1.14299')),
     F(27, null, 'Add lines 22 to 26', c => sum(...['13500','13700','13900','14100','14300'].map(k => c.v('T1.' + k))), { total: true }),
     F(28, null, 'Line 21 plus line 27', c => c.v('T1.L21') + c.v('T1.L27'), { total: true }),
-    I(29, '14400', "Workers' compensation benefits", { req: 'T5007' }),
-    I(30, '14500', 'Social assistance payments'),
+    F(29, '14400', "Workers' compensation benefits", c => c.s('T5007', '10')),
+    F(30, '14500', 'Social assistance payments', c => c.s('T5007', '11'), { note: 'If married or common-law, the spouse with the higher net income (excluding these payments) reports this.' }),
     F(31, '14600', 'Net federal supplements paid', c => c.s('T4AOAS', '21'), { req: 'T4A(OAS)' }),
     F(32, '14700', 'Add lines 29 to 31', c => c.v('T1.14400') + c.v('T1.14500') + c.v('T1.14600')),
     F(33, '15000', 'Total income', c => c.v('T1.L28') + c.v('T1.14700'), { total: true, key: true }),
@@ -814,7 +903,7 @@ function buildForms() {
     F(null, '20600', 'Pension adjustment', c => c.s('T4', '52') + c.s('T4A', '034'), { sub: true }),
     F(35, '20700', 'Registered pension plan (RPP) deduction', c => c.s('T4', '20') + c.s('T4A', '032')),
     F(36, '20800', 'RRSP deduction', c => c.v('S7.L20'), { req: 'S7' }),
-    I(37, '20805', 'FHSA deduction', { req: 'S15' }),
+    F(37, '20805', 'FHSA deduction', c => c.s('T4FHSA', '18'), { req: 'S15', note: 'Defaults to T4FHSA box 18. Limited to FHSA participation room ($8,000 plus carryforward); override to deduct less.' }),
     I(null, '20810', 'PRPP employer contributions', { sub: true }),
     I(38, '21000', 'Deduction for elected split-pension amount', { req: 'T1032' }),
     F(39, '21200', 'Annual union, professional, or like dues', c => c.s('T4', '44')),
@@ -830,9 +919,11 @@ function buildForms() {
     I(47, '22200', 'Deduction for CPP or QPP contributions on self-employment income', { req: 'S8 Part 4' }),
     F(48, '22215', 'Deduction for CPP or QPP enhanced contributions on employment income', c => c.v('S8.L28'), { req: 'S8' }),
     I(49, '22400', 'Exploration and development expenses', { req: 'T1229' }),
-    I(50, '22900', 'Other employment expenses', { req: 'T777' }),
+    F(50, '22900', 'Other employment expenses', c => c.s('T4PS', '36') + c.v('T1.EMPX')),
+    I(null, null, 'Employment expenses (T777) and other amounts not on a slip', { sub: true, k: 'EMPX', req: 'T777' }),
     I(51, '23100', 'Clergy residence deduction', { req: 'T1223' }),
-    I(52, '23200', 'Other deductions'),
+    F(52, '23200', 'Other deductions', c => rrsp(c).neg + rif(c).neg + c.v('T1.ODED'), { note: 'Includes negative T4RSP box 28 and T4RIF box 22 amounts.' }),
+    I(null, null, 'Other deductions not on a slip', { sub: true, k: 'ODED' }),
     F(53, '23300', 'Add lines 35 to 52', c => sum(...['20700','20800','20805','21000','21200','21300','21400','21500','21700','21900','22000','22100','22200','22215','22400','22900','23100','23200'].map(k => c.v('T1.' + k))), { total: true }),
     F(54, '23400', 'Net income before adjustments (line 34 minus line 53)', c => c.v('T1.L34') - c.v('T1.23300'), { total: true }),
     F(55, '23500', 'Social benefits repayment', c => c.v('FW.S21')),
@@ -927,7 +1018,7 @@ function buildForms() {
     I(133, null, 'Federal logging tax credit'),
     F(134, null, 'Federal tax (line 132 minus line 133)', c => pos(c.v('T1.L132') - c.v('T1.L133')), { total: true }),
     H('Federal political contribution tax credit', 2),
-    I(null, '40900', 'Total federal political contributions', { sub: true, req: 'Receipts' }),
+    F(null, '40900', 'Total federal political contributions', c => c.s('POL', 'fed'), { sub: true }),
     F(135, '41000', 'Federal political contribution tax credit (maximum $650)', c => politicalCredit(c.v('T1.40900'))),
     I(136, '41200', 'Investment tax credit', { req: 'T2038(IND)' }),
     H('Labour-sponsored funds tax credit', 2),
@@ -947,7 +1038,7 @@ function buildForms() {
     F(147, '42800', 'Provincial or territorial tax', c => c.v('ON428.L90'), { req: 'ON428' }),
     F(148, '43500', 'Total payable', c => sum(...['L143','42100','42120','42200','42800'].map(k => c.v('T1.' + k))), { total: true, key: true }),
     F(149, null, 'Amount from line 43500', c => c.v('T1.43500')),
-    F(150, '43700', 'Total income tax deducted', c => c.s('T4', '22') + c.s('T4A', '022') + c.s('T4AP', '22') + c.s('T4AOAS', '22') + c.s('T4E', '22'), { key: true, note: 'Box 22 of all T4, T4A, T4A(P), T4A(OAS) and T4E slips.' }),
+    F(150, '43700', 'Total income tax deducted', c => c.s('T4', '22') + c.s('T4A', '022') + c.s('T4AP', '22') + c.s('T4AOAS', '22') + c.s('T4E', '22') + c.s('T4RSP', '30') + c.s('T4RIF', '28') + c.s('T4FHSA', '30') + c.s('T4ARCA', '22'), { key: true, note: 'Income tax deducted on all slips (T4, T4A, T4A(P), T4A(OAS), T4E, T4RSP, T4RIF, T4FHSA, T4A-RCA).' }),
     I(151, '44000', 'Refundable Quebec abatement'),
     F(152, '44800', 'CPP or QPP overpayment', c => c.v('S8.L24') >= 1 ? c.v('S8.L24') : 0),
     F(153, '45000', 'Employment insurance overpayment', c => c.v('T2204.L15') > 1 ? c.v('T2204.L15') : 0),
@@ -964,7 +1055,7 @@ function buildForms() {
     I(162, '47555', 'Canadian journalism labour tax credit', { req: 'T5013' }),
     I(163, '47556', 'Return of fuel charge proceeds to farmers tax credit', { req: 'T2043' }),
     I(164, '47600', 'Tax paid by instalments'),
-    I(165, '47900', 'Provincial or territorial credits', { req: 'ON479' }),
+    F(165, '47900', 'Provincial or territorial credits', c => c.v('ON479.L12'), { req: 'ON479' }),
     F(166, '48200', 'Add lines 150 to 165', c => sum(...['43700','44000','44800','45000','45200','45300','45350','45355','45400','45600','45700','46900','47555','47556','47600','47900'].map(k => c.v('T1.' + k))), { total: true, key: true }),
     F(167, null, 'Line 149 minus line 166 (refund if negative)', c => c.v('T1.L149') - c.v('T1.48200'), { total: true }),
     F(null, '48400', 'Refund', c => c.v('T1.L167') < 0 ? -c.v('T1.L167') : 0, { key: true }),
@@ -1100,7 +1191,8 @@ function buildForms() {
     H('QFFP: Mortgage foreclosures and conditional sales repossessions'),
     I(null, '12399', 'Total proceeds of disposition', { sub: true }), I(3, '12400', 'Total gain or loss'),
     H('Publicly traded shares, mutual fund units, and other shares'),
-    I(null, '13199', 'Total proceeds of disposition', { sub: true }), I(4, '13200', 'Total gain or loss'),
+    F(null, '13199', 'Total proceeds of disposition (T5008 box 21)', c => c.s('T5008', '21'), { sub: true }),
+    F(4, '13200', 'Total gain or loss (T5008 proceeds minus cost and outlays)', c => t5008Gain(c), { note: 'Uses T5008 box 20 as cost. Brokers often show book value, not your adjusted cost base; override if they differ.' }),
     H('Real estate, depreciable property, and other properties'),
     I(null, '13599', 'Total proceeds of disposition', { sub: true }), I(5, '13800', 'Total gain or loss'),
     H('Bonds, debentures, promissory notes, and other similar properties'),
@@ -1119,7 +1211,7 @@ function buildForms() {
     F(12, null, 'Amount from line 11', c => c.v('S3.L11')),
     I(13, '16100', 'Capital gains deferral from eligible small business corporation shares'),
     F(14, null, 'Line 12 minus line 13', c => c.v('S3.L12') - c.v('S3.16100')),
-    F(15, '17400', 'Capital gains (or losses) from T5, T5013, and T4PS slips', c => c.s('T5', '18')),
+    F(15, '17400', 'Capital gains (or losses) from T5, T5013, and T4PS slips', c => c.s('T5', '18') + c.s('T5013', '151') + c.s('T4PS', '34')),
     I(16, '17600', 'Capital gains (or losses) from T3 slips'),
     F(17, null, 'Add lines 14 to 16', c => c.v('S3.L14') + c.v('S3.17400') + c.v('S3.17600')),
     I(18, '17800', 'Capital loss from a reduction in your business investment loss'),
@@ -1172,8 +1264,8 @@ function buildForms() {
   const S7 = { id: 'S7', title: 'Schedule 7 – RRSP, PRPP, and SPP Contributions and Transfers, and HBP and LLP Activities', color: 'blue', rows: [
     H('Part A – RRSP, PRPP, and SPP contributions'),
     I(1, null, 'Unused RRSP, PRPP, and SPP contributions from your latest notice of assessment'),
-    I(2, null, 'Contributions made from March 4, 2025, to December 31, 2025'),
-    I(3, null, 'Contributions made from January 1, 2026, to March 2, 2026'),
+    F(2, null, 'Contributions made from March 4, 2025, to December 31, 2025', c => c.s('RRSPR', 'a')),
+    F(3, null, 'Contributions made from January 1, 2026, to March 2, 2026', c => c.s('RRSPR', 'b')),
     F(4, '24500', 'Line 2 plus line 3', c => c.v('S7.L2') + c.v('S7.L3')),
     F(5, null, 'Total contributions (line 1 plus line 4)', c => c.v('S7.L1') + c.v('S7.24500'), { total: true }),
     H('Part B – Repayments under the HBP and LLP'),
@@ -1315,28 +1407,31 @@ function buildForms() {
   const FW = { id: 'FW', title: 'Federal Worksheet', color: 'blue', rows: [
     H('Lines 12000 and 12010 – Taxable amount of dividends'),
     F('D1', null, 'Taxable eligible dividends (box 25 of all T5 slips)', c => c.s('T5', '25'), { k: 'D1' }),
-    I('D2', null, 'Taxable eligible dividends from T3, T4PS, and T5013 slips', { k: 'D2' }),
+    F('D2', null, 'Taxable eligible dividends from T4PS (box 31) and T5013 (box 133) slips', c => c.s('T4PS', '31') + c.s('T5013', '133'), { k: 'D2' }),
+    I('D2b', null, 'Taxable eligible dividends from T3 slips', { k: 'D2b' }),
     I('D3', null, 'Actual eligible dividends not on a slip', { k: 'D3' }),
     F('D4', null, 'Line D3 × 138%', c => c.v('FW.D3') * C.eligGrossUp, { k: 'D4' }),
     F('D5', null, 'Taxable non-eligible dividends (box 11 of all T5 slips)', c => c.s('T5', '11'), { k: 'D5' }),
-    I('D6', null, 'Taxable non-eligible dividends from T3, T4PS, and T5013 slips', { k: 'D6' }),
+    F('D6', null, 'Taxable non-eligible dividends from T4PS (box 25) and T5013 (box 130) slips', c => c.s('T4PS', '25') + c.s('T5013', '130'), { k: 'D6' }),
+    I('D6b', null, 'Taxable non-eligible dividends from T3 slips', { k: 'D6b' }),
     I('D7', null, 'Actual non-eligible dividends not on a slip', { k: 'D7' }),
     F('D8', null, 'Line D7 × 115%', c => c.v('FW.D7') * C.nonEligGrossUp, { k: 'D8' }),
-    F('D16', null, 'Total taxable eligible dividends', c => c.v('FW.D1') + c.v('FW.D2') + c.v('FW.D4'), { k: 'D16' }),
-    F('D18', '12010', 'Total taxable non-eligible dividends', c => c.v('FW.D5') + c.v('FW.D6') + c.v('FW.D8'), { k: 'D18' }),
+    F('D16', null, 'Total taxable eligible dividends', c => c.v('FW.D1') + c.v('FW.D2') + c.v('FW.D2b') + c.v('FW.D4'), { k: 'D16' }),
+    F('D18', '12010', 'Total taxable non-eligible dividends', c => c.v('FW.D5') + c.v('FW.D6') + c.v('FW.D6b') + c.v('FW.D8'), { k: 'D18' }),
     F('D17', '12000', 'Total taxable dividends', c => c.v('FW.D16') + c.v('FW.D18'), { k: 'D17', total: true }),
     H('Dividend tax credits'),
     F('D21', '40425', 'Federal: 15.0198% of eligible + 9.0301% of non-eligible', c => c.v('FW.D16') * C.fedDtcElig + c.v('FW.D18') * C.fedDtcNonElig, { k: 'D21' }),
     F('D22', '61520', 'Ontario: 10% of eligible + 2.9863% of non-eligible', c => c.v('FW.D16') * C.onDtcElig + c.v('FW.D18') * C.onDtcNonElig, { k: 'D22' }),
     H('Line 12100 – Interest and other investment income'),
     F('I1', null, 'Boxes 13, 14, 15, and 30 of all T5 slips', c => c.s('T5', '13') + c.s('T5', '14') + c.s('T5', '15') + c.s('T5', '30'), { k: 'I1' }),
-    I('I2', null, 'T3 and T5013 interest and other income', { k: 'I2' }),
+    F('I2', null, 'T5013 boxes 128, 135, and 146, and T4PS box 37', c => c.s('T5013', '128') + c.s('T5013', '135') + c.s('T5013', '146') + c.s('T4PS', '37'), { k: 'I2' }),
+    I('I2b', null, 'T3 interest and other investment income', { k: 'I2b' }),
     I('I3', null, 'Amounts credited but not received (reinvestments)', { k: 'I3' }),
     I('I4', null, 'Interest on a tax refund', { k: 'I4' }),
     I('I5', null, 'Foreign income not on a slip (in Canadian dollars)', { k: 'I5' }),
     I('I6', null, 'Interest from foreign accounts, GICs, and similar not on a slip', { k: 'I6' }),
     I('I7', null, 'Royalties not included on line 10400 or 13500', { k: 'I7' }),
-    F('I8', null, 'Add lines I1 to I7', c => sum(...['I1','I2','I3','I4','I5','I6','I7'].map(k => c.v('FW.' + k))), { k: 'I8' }),
+    F('I8', null, 'Add lines I1 to I7', c => sum(...['I1','I2','I2b','I3','I4','I5','I6','I7'].map(k => c.v('FW.' + k))), { k: 'I8' }),
     I('I9', null, 'Amounts on line I8 already reported in previous years', { k: 'I9' }),
     F('I11', '12100', 'Interest and other investment income (line I8 minus line I9)', c => c.v('FW.I8') - c.v('FW.I9'), { k: 'I11', total: true }),
     H('Line 23500 – Social benefits repayment'),
@@ -1372,7 +1467,60 @@ function buildForms() {
     F('U4', '34990', 'Top-up tax credit (line U2 × line U3)', c => c.v('FW.U2') * c.v('FW.U3'), { k: 'U4', total: true, note: 'Applies only when line 33500 credits exceed $57,375. Confirm against the 2025 Federal Worksheet chart for line 34990.' }),
   ]};
 
-  return [T1, ON428, ON428A, S3, S6, S7, S8, S9, S11, T2204, FW];
+  const famNI = c => c.v('T1.23600') + (c.m.hasSpouse ? (+c.m.spouseNetIncome || 0) : 0);
+  const born = c => parseInt(c.m.birthYear, 10) || 9999;
+  const ON479 = { id: 'ON479', title: 'ON479 – Ontario Credits', color: 'pink', rows: [
+    I(1, null, 'Ontario childcare access and relief from expenses (CARE) tax credit', { req: 'ON479-A' }),
+    H("Ontario seniors' public transit tax credit", 2),
+    I(null, '63100', 'Eligible public transit costs (maximum $3,000)', { sub: true }),
+    F(2, null, 'Line 63100 × 15% (65 or older on December 31, 2024)', c => born(c) <= 1959 ? C.transitRate * Math.min(C.transitMax, c.v('ON479.63100')) : 0),
+    H('Ontario political contribution tax credit', 2),
+    F(null, '63110', 'Contributions to Ontario parties, associations, and candidates', c => c.s('POL', 'on'), { sub: true }),
+    F(3, null, 'Ontario political contribution tax credit (maximum $1,666.82)', c => onPoliticalCredit(c.v('ON479.63110'))),
+    H('Ontario seniors care at home tax credit (70 or older, or spouse 70 or older)', 7),
+    F(4, null, 'Medical expenses for self, spouse, and children (line 58689)', c => c.v('ON428.58689')),
+    F(5, null, 'Net income (line 23600) × 3%', c => c.v('T1.23600') * 0.03),
+    F(6, null, 'Claimable medical expenses: line 4 minus line 5 (maximum $6,000)', c => Math.min(C.careHome.max, pos(c.v('ON479.L4') - c.v('ON479.L5')))),
+    F(7, null, 'Line 6 × 25%', c => c.v('ON479.L6') * C.careHome.rate),
+    F(8, null, 'Family net income (yours plus spouse\'s)', famNI),
+    F(9, null, '(Line 8 minus $35,000) × 5% (if negative, enter "0")', c => pos(c.v('ON479.L8') - C.careHome.thr) * C.careHome.reduce),
+    F(10, null, 'Seniors care at home tax credit (line 7 minus line 9)', c => (born(c) <= 1955 || c.m.spouse70) ? pos(c.v('ON479.L7') - c.v('ON479.L9')) : 0),
+    I(11, null, 'Ontario focused flow-through share tax credit'),
+    F(12, '47900', 'Total Ontario credits (lines 1, 2, 3, 10, and 11)', c => sum(c.v('ON479.L1'), c.v('ON479.L2'), c.v('ON479.L3'), c.v('ON479.L10'), c.v('ON479.L11')), { total: true, key: true }),
+  ]};
+
+  const ONBEN = { id: 'ONBEN', title: 'ON-BEN – 2026 Ontario Trillium Benefit (Estimate)', color: 'pink', rows: [
+    H('Amounts from the application'),
+    F(1, null, 'Rent paid for a principal residence in Ontario in 2025', c => c.s('RENT', 'amt')),
+    F(2, null, 'Property tax paid for a principal residence in Ontario in 2025', c => c.s('PTAX', 'amt')),
+    F(3, null, 'Designated student residence ($25)', c => c.m.studentRes ? C.otb.studentRes : 0),
+    I(4, null, 'Public or non-profit long-term care home accommodation paid'),
+    I(5, null, 'Home energy costs paid on a reserve'),
+    H('Ontario energy and property tax credit (OEPTC)'),
+    F(6, null, 'Occupancy cost: 20% of line 1, plus lines 2 and 3', c => 0.2 * c.v('ONBEN.L1') + c.v('ONBEN.L2') + c.v('ONBEN.L3')),
+    F(7, null, 'Energy component: line 6 + 20% of line 4 + line 5 (maximum $290)', c => Math.min(C.otb.energyMax, c.v('ONBEN.L6') + 0.2 * c.v('ONBEN.L4') + c.v('ONBEN.L5'))),
+    F(8, null, 'Property tax component: 10% of line 6 (max $944; 64+ $581) + $73 (64+ $617), not more than line 6', c => {
+      const occ = c.v('ONBEN.L6'); if (occ <= 0) return 0; const sr = born(c) <= 1961;
+      return Math.min(occ, Math.min(sr ? C.otb.ptCapSr : C.otb.ptCap, 0.1 * occ) + (sr ? C.otb.ptAddSr : C.otb.ptAdd)); }),
+    F(9, null, 'Adjusted family net income', famNI),
+    F(10, null, 'Income threshold', c => { const sr = born(c) <= 1961, fam = c.m.hasSpouse || (+c.m.onChildren || 0) > 0;
+      return sr ? (fam ? C.otb.thrSrFamily : C.otb.thrSrSingle) : (fam ? C.otb.thrFamily : C.otb.thrSingle); }),
+    F(11, null, 'Reduction: (line 9 minus line 10) × 2%', c => pos(c.v('ONBEN.L9') - c.v('ONBEN.L10')) * C.otb.reduce),
+    F(12, null, 'OEPTC (line 7 plus line 8 minus line 11)', c => pos(c.v('ONBEN.L7') + c.v('ONBEN.L8') - c.v('ONBEN.L11')), { total: true }),
+    H('Ontario sales tax credit (OSTC)'),
+    F(13, null, 'Number of people: you, your spouse, and children under 19', c => 1 + (c.m.hasSpouse ? 1 : 0) + (+c.m.onChildren || 0), { fmt: 'int' }),
+    F(14, null, 'Line 13 × $378', c => c.v('ONBEN.L13') * C.otb.ostc),
+    F(15, null, 'Income threshold', c => (c.m.hasSpouse || (+c.m.onChildren || 0) > 0) ? C.otb.ostcFamily : C.otb.ostcSingle),
+    F(16, null, 'Reduction: (line 9 minus line 15) × 4%', c => pos(c.v('ONBEN.L9') - c.v('ONBEN.L15')) * C.otb.ostcReduce),
+    F(17, null, 'OSTC (line 14 minus line 16)', c => pos(c.v('ONBEN.L14') - c.v('ONBEN.L16')), { total: true }),
+    H('Northern Ontario energy credit (NOEC)'),
+    F(18, null, 'Maximum (lived in Northern Ontario on December 31, 2025)', c => (c.m.northern && (c.v('ONBEN.L6') > 0 || c.v('ONBEN.L4') > 0 || c.v('ONBEN.L5') > 0)) ? (c.m.hasSpouse || (+c.m.onChildren || 0) > 0 ? C.otb.noecFamily : C.otb.noecSingle) : 0),
+    F(19, null, 'Reduction: (line 9 minus $50,833; family $65,356) × 1%', c => c.v('ONBEN.L18') > 0 ? pos(c.v('ONBEN.L9') - (c.m.hasSpouse || (+c.m.onChildren || 0) > 0 ? C.otb.noecThrFamily : C.otb.noecThrSingle)) * C.otb.noecReduce : 0),
+    F(20, null, 'NOEC (line 18 minus line 19)', c => pos(c.v('ONBEN.L18') - c.v('ONBEN.L19')), { total: true }),
+    F(21, null, 'Estimated Ontario Trillium Benefit, July 2026 to June 2027', c => c.v('ONBEN.L12') + c.v('ONBEN.L17') + c.v('ONBEN.L20'), { total: true, key: true, note: 'An estimate, not part of the refund. CRA calculates it after assessing the return and pays it monthly (or in July if $500 or less). Only one spouse applies for the household.' }),
+  ]};
+
+  return [T1, ON428, ON428A, ON479, ONBEN, S3, S6, S7, S8, S9, S11, T2204, FW];
 }
 
 const FORMS = buildForms();
@@ -1404,7 +1552,7 @@ function blankState() {
     meta: { clientName: '', taxYear: 2025, birthYear: '', dtc: false, hasSpouse: false,
             spouseNetIncome: 0, spouseWorkingIncome: 0, spouseClaim: false, spouseInfirm: false, spouseDTC: false,
             dependantClaim: false, dependantNetIncome: 0, family: false, cwbEligible: true,
-            onChildren: 0, onImpaired: 0, notes: '' },
+            onChildren: 0, onImpaired: 0, notes: '', rifSpouseDeath: false, spouse70: false, northern: false, studentRes: false },
     slips: {},       // slipId -> [{payer, boxes:{box:value}}]
     values: {},      // fullKey -> number (input rows, and overrides of calculated rows)
     notes: {},       // fullKey -> text
@@ -1457,7 +1605,7 @@ function review(state, res) {
   const out = [];
   const v = k => res.value[k];
   Object.values(ROWS).forEach(r => {
-    if (r.req && Math.abs(v(r.fk)) > 0.004 && !['S3','S7','S8','S9','S11','S6','ON428','T4E','T4A(OAS)','RC210','ON428-A'].includes(r.req))
+    if (r.req && Math.abs(v(r.fk)) > 0.004 && !['S3','S7','S8','S9','S11','S6','ON428','T4E','T4A(OAS)','T4A(P)','RC210','ON428-A','ON479','T4RSP','T4FHSA','T5007','T5013'].includes(r.req))
       out.push({ level: 'info', key: r.fk, text: `Line ${r.code || r.n} (${r.label}) has an amount: supporting form ${r.req} is needed.` });
   });
   const ov = Object.keys(state.values || {}).filter(k => ROWS[k] && ROWS[k].calc && state.values[k] !== '' && state.values[k] != null);
@@ -1467,6 +1615,18 @@ function review(state, res) {
   if (v('T1.13010') > 0) out.push({ level: 'info', key: 'T1.13010', text: 'Scholarship income on line 13010: confirm whether the scholarship exemption applies.' });
   if (v('T1.31400') > 0) out.push({ level: 'info', key: 'T1.31400', text: 'Pension income amount claimed: confirm the income is eligible pension income.' });
   if (v('T1.34990') > 0) out.push({ level: 'info', key: 'FW.U4', text: 'Top-up tax credit applies: confirm against the Federal Worksheet chart for line 34990.' });
+  (state.slips.T5008 || []).forEach((s, i) => {
+    const b = s.boxes || {};
+    if ((+b['21'] || 0) > 0 && (b['20'] === undefined || b['20'] === '')) out.push({ level: 'warn', key: 'slip:T5008', text: `T5008 #${i + 1} (${s.payer || 'unnamed'}): no cost in box 20, so the whole proceeds count as a gain. Enter the adjusted cost base.` });
+  });
+  if (v('T1.14500') > 0 && state.meta.hasSpouse) out.push({ level: 'info', key: 'T1.14500', text: 'Social assistance reported: if married or common-law, it goes on the return of the spouse with the higher net income.' });
+  if ((state.slips.T5013 || []).some(s => +(s.boxes || {})['116'])) out.push({ level: 'info', key: 'T1.13500', text: 'T5013 box 116 is on line 13500 (active partner). If the client is not actively involved, move it to line 12200.' });
+  if ((state.slips.PTAX || []).length && parseInt(state.meta.birthYear, 10) <= 1961) out.push({ level: 'info', key: 'ONBEN.L2', text: 'Senior homeowner: the Ontario senior homeowners\' property tax grant is also claimed on ON-BEN (up to $500; CRA calculates it).' });
+  (state.slips.T4AP || []).forEach((s, i) => {
+    const b = s.boxes || {}, parts = ['14','15','16','17','18','19'].reduce((t, k) => t + (+b[k] || 0), 0);
+    if (b['20'] !== undefined && b['20'] !== '' && parts > (+b['20'] || 0) + 0.004)
+      out.push({ level: 'warn', key: 'slip:T4AP', text: `T4A(P) #${i + 1}: boxes 14 to 19 add up to ${fmtMoney(parts)}, more than box 20 (${fmtMoney(+b['20'] || 0)}). Box 20 should include them.` });
+  });
   (state.slips.T4 || []).forEach((s, i) => {
     const b = s.boxes || {}; const e = +b['14'] || 0, p = +b['26'];
     if (e > 0 && (b['26'] === undefined || b['26'] === '')) out.push({ level: 'warn', key: 'slip:T4', text: `T4 #${i + 1} (${s.payer || 'unnamed'}): box 26 is blank, so no CPP is calculated for it. Enter box 14 in box 26 if CPP applies.` });
@@ -1481,7 +1641,7 @@ function fmtMoney(x) {
   return (neg ? '−$' : '$') + s;
 }
 
-const api = { C, SLIPS, FORMS, ROWS, ALIAS, canon, blankState, evaluate, review, fmtMoney, healthPremium, politicalCredit, bracketCol, r2 };
+const api = { onPoliticalCredit, rrsp, rif, C, SLIPS, FORMS, ROWS, ALIAS, canon, blankState, evaluate, review, fmtMoney, healthPremium, politicalCredit, bracketCol, r2 };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.BenTax = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1508,8 +1668,16 @@ const h = (tag, attrs, ...kids) => {
 const KEY = 'bentax.returns.v1';
 const FORM_BY_ID = Object.fromEntries(T.FORMS.map(f => [f.id, f]));
 const SLIP_BY_ID = Object.fromEntries(T.SLIPS.map(s => [s.id, s]));
-const SLIP_NAV = { T4: 'T4', T4A: 'T4A', T4AP: 'T4A(P)', T4AOAS: 'T4A(OAS)', T4E: 'T4E', T5: 'T5', T2202: 'T2202', RC210: 'RC210', DON: 'Donation receipts' };
-const FORM_NAV = { T1: 'T1 Return', ON428: 'ON428 Ontario Tax', ON428A: 'ON428-A LIFT', S3: 'Schedule 3', S6: 'Schedule 6', S7: 'Schedule 7', S8: 'Schedule 8', S9: 'Schedule 9', S11: 'Schedule 11', T2204: 'T2204', FW: 'Federal Worksheet' };
+const SLIP_NAV = { T4: 'T4', T4A: 'T4A', T4AP: 'T4A(P)', T4AOAS: 'T4A(OAS)', T4E: 'T4E', T5: 'T5', T5008: 'T5008', T4RSP: 'T4RSP', T4RIF: 'T4RIF', T4FHSA: 'T4FHSA',
+  T2202: 'T2202', T5007: 'T5007', T5013: 'T5013', T4PS: 'T4PS', T4ARCA: 'T4A-RCA', T1204: 'T1204', RC210: 'RC210' };
+const RECEIPT_NAV = { DON: 'Donations', RRSPR: 'RRSP contributions', POL: 'Political contributions', RENT: 'Rent (ON-BEN)', PTAX: 'Property tax (ON-BEN)' };
+const LIST_HINT = { DON: 'One row per official receipt. The total feeds Schedule 9 line 1.',
+  RRSPR: 'One row per receipt, split by contribution period. Totals feed Schedule 7 lines 2 and 3. Do not include contributions already deducted on the 2024 return.',
+  POL: 'One row per official receipt. Federal amounts feed line 40900; Ontario amounts feed the ON479 credit.',
+  RENT: 'Rent paid in 2025 for a principal residence in Ontario. Feeds ON-BEN.',
+  PTAX: 'Property tax paid in 2025 for a principal residence in Ontario. Feeds ON-BEN.' };
+const ALL_SLIP_NAV = Object.assign({}, SLIP_NAV, RECEIPT_NAV);
+const FORM_NAV = { T1: 'T1 Return', ON428: 'ON428 Ontario Tax', ON428A: 'ON428-A LIFT', ON479: 'ON479 Ontario Credits', ONBEN: 'ON-BEN Trillium (est.)', S3: 'Schedule 3', S6: 'Schedule 6', S7: 'Schedule 7', S8: 'Schedule 8', S9: 'Schedule 9', S11: 'Schedule 11', T2204: 'T2204', FW: 'Federal Worksheet' };
 
 /* ---------------- storage ---------------- */
 let store, S, res, checks = [];
@@ -1587,6 +1755,8 @@ function renderSide() {
   sd.append(item('review', 'black', 'Review'));
   sd.append(h('div', { class: 'grp' }, 'Slips'));
   Object.entries(SLIP_NAV).forEach(([id, nm]) => sd.append(item('slip:' + id, 'grey', nm)));
+  sd.append(h('div', { class: 'grp' }, 'Receipts'));
+  Object.entries(RECEIPT_NAV).forEach(([id, nm]) => sd.append(item('slip:' + id, 'grey', nm)));
   sd.append(h('div', { class: 'grp' }, 'Forms'));
   T.FORMS.forEach(f => sd.append(item('form:' + f.id, f.color, FORM_NAV[f.id] || f.id)));
 }
@@ -1595,7 +1765,7 @@ function refreshSide() {
   const set = (view, txt, warn) => { const e = $(`[data-badge="${view}"]`); if (e) { e.textContent = txt; e.classList.toggle('warn', !!warn); } };
   const nw = checks.filter(c => c.level === 'warn').length;
   set('review', checks.length ? (nw || checks.length) : '', nw > 0);
-  Object.keys(SLIP_NAV).forEach(id => { const n = (S.slips[id] || []).length; set('slip:' + id, n ? String(n) : ''); });
+  Object.keys(ALL_SLIP_NAV).forEach(id => { const n = (S.slips[id] || []).length; set('slip:' + id, n ? String(n) : ''); });
   const fk = { T1: 'T1.48200', ON428: 'ON428.L90', S3: 'S3.19700', S6: 'S6.L41', S7: 'S7.L20', S8: 'S8.L24', S9: 'S9.L23', S11: 'S11.L17', T2204: 'T2204.L15', ON428A: 'ON428A.L10' };
   T.FORMS.forEach(f => {
     const ov = Object.keys(S.values).some(k => k.startsWith(f.id + '.') && T.ROWS[k] && T.ROWS[k].calc && S.values[k] !== '' && S.values[k] != null);
@@ -1749,8 +1919,8 @@ function renderSlip(m, id) {
   m.className = 'main';
   const d = SLIP_BY_ID[id];
   m.append(h('div', { class: 'ptitle' }, h('h1', null, d.title), h('span', { class: 'sp' }),
-    h('button', { class: 'btn', onclick: () => addPayer(id) }, id === 'DON' ? '+ Add receipt' : '+ Add ' + SLIP_NAV[id] + ' slip')));
-  if (id === 'DON') return renderDonations(m);
+    h('button', { class: 'btn', onclick: () => addPayer(id) }, d.list ? '+ Add receipt' : '+ Add ' + SLIP_NAV[id] + ' slip')));
+  if (d.list) return renderList(m, id);
   const list = S.slips[id] || [];
   m.append(h('div', { class: 'hint' }, list.length > 1 ? 'Each slip is a column. Totals feed the forms automatically.' : 'Enter boxes exactly as shown on the slip. Totals feed the forms automatically.'));
   const thead = h('thead', null, h('tr', null,
@@ -1776,7 +1946,7 @@ function renderSlip(m, id) {
 }
 function refreshSlip() {
   const id = store.ui.view.slice(5); const d = SLIP_BY_ID[id];
-  if (id === 'DON') { const t = $('#donTot'); if (t) t.textContent = T.fmtMoney((S.slips.DON || []).reduce((a, s) => a + (+s.boxes.amt || 0), 0)); return; }
+  if (d.list) { d.boxes.forEach(([bx]) => { const t = $(`[data-ltot="${bx}"]`); if (t) t.textContent = T.fmtMoney((S.slips[id] || []).reduce((a, s) => a + (+(s.boxes || {})[bx] || 0), 0)); }); $$('.dlist input[inputmode]').forEach(i => i._show && i._show()); return; }
   $$('[data-tot]').forEach(td => {
     const bx = td.dataset.tot, f = (d.boxes.find(b => b[0] === bx) || [])[2];
     const t = (S.slips[id] || []).reduce((a, s) => a + (+((s.boxes || {})[bx]) || 0), 0);
@@ -1784,26 +1954,29 @@ function refreshSlip() {
   });
   $$('.stable input[inputmode]').forEach(i => i._show && i._show());
 }
-function renderDonations(m) {
-  const list = S.slips.DON || [];
+function renderList(m, id) {
+  const d = SLIP_BY_ID[id], list = S.slips[id] || [];
   const tb = h('tbody');
   list.forEach((s, i) => {
-    const amt = h('input', { inputmode: 'decimal', 'aria-label': 'Amount' });
-    bindNumInput(amt, () => s.boxes.amt, v => { if (v == null) delete s.boxes.amt; else s.boxes.amt = v; });
     tb.append(h('tr', null,
-      h('td', null, h('input', { value: s.payer || '', placeholder: "Charity's name", onchange: e => { s.payer = e.target.value; changed(); } })),
-      h('td', { class: 'amt' }, amt),
-      h('td', { style: 'width:40px;text-align:center' }, h('button', { class: 'btn ghost sm', onclick: () => removePayer('DON', i), 'aria-label': 'Remove receipt' }, '×'))));
+      h('td', null, h('input', { value: s.payer || '', placeholder: d.payer, 'aria-label': d.payer, onchange: e => { s.payer = e.target.value; changed(); } })),
+      ...d.boxes.map(([bx, lab]) => {
+        const amt = h('input', { inputmode: 'decimal', 'aria-label': lab });
+        bindNumInput(amt, () => (s.boxes || {})[bx], v => { s.boxes = s.boxes || {}; if (v == null) delete s.boxes[bx]; else s.boxes[bx] = v; });
+        return h('td', { class: 'amt' }, amt);
+      }),
+      h('td', { style: 'width:40px;text-align:center' }, h('button', { class: 'btn ghost sm', onclick: () => removePayer(id, i), 'aria-label': 'Remove receipt' }, '×'))));
   });
-  m.append(h('div', { class: 'hint' }, 'One row per official receipt. The total feeds Schedule 9 line 1.'));
+  m.append(h('div', { class: 'hint' }, LIST_HINT[id] || ''));
   m.append(h('table', { class: 'dlist' },
-    h('thead', null, h('tr', null, h('th', null, "Charity's name"), h('th', { style: 'text-align:right;width:220px' }, 'Eligible amount'), h('th', null, ''))),
-    tb, h('tfoot', null, h('tr', null, h('td', null, 'Total'), h('td', { style: 'text-align:right', id: 'donTot', class: 'num' }, ''), h('td', null, '')))));
+    h('thead', null, h('tr', null, h('th', null, d.payer), ...d.boxes.map(([, lab]) => h('th', { style: 'text-align:right;width:200px' }, lab)), h('th', null, ''))),
+    tb, h('tfoot', null, h('tr', null, h('td', null, 'Total'), ...d.boxes.map(([bx]) => h('td', { style: 'text-align:right', 'data-ltot': bx, class: 'num' }, '')), h('td', null, '')))));
+  if (!list.length) m.append(h('div', { class: 'empty-slip' }, 'No receipts yet.'));
 }
 function addPayer(id) {
   (S.slips[id] = S.slips[id] || []).push({ payer: '', boxes: {} });
   changed(); renderMain();
-  const ins = $$(id === 'DON' ? '.dlist tbody tr:last-child input' : '.payer input');
+  const ins = $$(SLIP_BY_ID[id].list ? '.dlist tbody tr:last-child input' : '.payer input');
   if (ins.length) ins[ins.length - 1].focus();
 }
 function removePayer(id, i) {
@@ -1829,17 +2002,21 @@ function renderDetails(m) {
   if (M.hasSpouse) sp.append(h('div', { class: 'fgrid', style: 'margin-top:10px' },
     txt('spouseNetIncome', "Spouse's net income (line 23600)", 'Used for the spouse amount, LIFT, and CWB.', 'number'),
     txt('spouseWorkingIncome', "Spouse's working income", 'For Schedule 6 (CWB).', 'number')),
-    h('div', { style: 'margin-top:8px' }, chk('spouseClaim', 'Claim the spouse or common-law partner amount (line 30300 / 58120)'), chk('spouseInfirm', 'Spouse has an impairment (adds the Canada caregiver amount to line 30300)'), chk('spouseDTC', 'Spouse is also eligible for the disability tax credit')));
+    h('div', { style: 'margin-top:8px' }, chk('spouse70', 'Spouse turned 70 or older in 2025 (Ontario seniors care at home credit)'), chk('spouseClaim', 'Claim the spouse or common-law partner amount (line 30300 / 58120)'), chk('spouseInfirm', 'Spouse has an impairment (adds the Canada caregiver amount to line 30300)'), chk('spouseDTC', 'Spouse is also eligible for the disability tax credit')));
   m.append(sp);
   const dep = h('div', { class: 'card' }, h('h2', null, 'Dependants'),
     chk('family', 'Has an eligible dependant for the Canada workers benefit (family rates)'),
     chk('dependantClaim', 'Claim the Ontario amount for an eligible dependant (line 58160)'));
   if (M.dependantClaim) dep.append(h('div', { class: 'fgrid', style: 'margin-top:8px' }, txt('dependantNetIncome', "Eligible dependant's net income", null, 'number')));
   dep.append(h('div', { class: 'fgrid', style: 'margin-top:10px' },
-    txt('onChildren', 'Dependent children for the Ontario tax reduction', 'Children born in 2007 or later ($544 each).', 'number'),
+    txt('onChildren', 'Dependent children under 19', 'Children born in 2007 or later. Used for the Ontario tax reduction ($544 each) and the Trillium Benefit.', 'number'),
     txt('onImpaired', 'Dependants with an impairment (Ontario tax reduction)', '$544 each.', 'number')));
   dep.append(h('div', { class: 'help', style: 'margin-top:8px;font-size:12px;color:var(--ink3)' }, 'Enter the federal eligible dependant and caregiver amounts directly on T1 lines 30400–30500.'));
   m.append(dep);
+  m.append(h('div', { class: 'card' }, h('h2', null, 'Ontario Trillium Benefit and other details'),
+    chk('northern', 'Lived in Northern Ontario on December 31, 2025 (Northern Ontario energy credit)'),
+    chk('studentRes', 'Lived in a designated Ontario student residence in 2025'),
+    chk('rifSpouseDeath', "RRIF payments were received because of a spouse's death (reported as pension income at any age)")));
   m.append(h('div', { class: 'card' }, h('h2', null, 'File notes'), h('div', { class: 'fld' },
     h('textarea', { 'aria-label': 'File notes', onchange: e => { M.notes = e.target.value; changed(); } }, M.notes || ''))));
   m.append(h('p', { class: 'privacy' }, 'Privacy: this page has no server. Returns are saved only in this browser and in files you export. Do not enter SINs or banking details.'));
@@ -1944,9 +2121,19 @@ function makePdf(full, includeZero) {
   const today = new Date().toLocaleDateString('en-CA', { year: 'numeric', month: 'long', day: 'numeric' });
   const COL = { green: [211, 230, 200], pink: [244, 204, 204], blue: [201, 218, 248] };
   const TINT = { green: [233, 242, 228], pink: [251, 231, 231], blue: [227, 236, 252] };
-  doc.setFont('helvetica', 'bold'); doc.setFontSize(9); doc.setTextColor(120);
-  doc.text('2025 INCOME TAX AND BENEFIT RETURN  ·  ONTARIO', M, 56);
-  doc.setFontSize(22); doc.setTextColor(20); doc.text(pdfText(name), M, 84);
+  // Logo (same mark as the site favicon): black rounded square, white B, three colour bars
+  const L = 34, lx = M, ly = 52;
+  doc.setFillColor(17, 17, 17); doc.roundedRect(lx, ly, L, L, 6.4, 6.4, 'F');
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(21); doc.setTextColor(255); doc.text('B', lx + L / 2, ly + 22, { align: 'center' });
+  [[182, 215, 168], [234, 153, 153], [164, 194, 244]].forEach((col, i) => { doc.setFillColor(...col); doc.roundedRect(lx + 6.4 + i * 7.4, ly + 26.6, 6.4, 2.7, 0.8, 0.8, 'F'); });
+  const tx = lx + L + 12;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(120);
+  doc.text('INCOME TAX AND BENEFIT RETURN  ·  ONTARIO', tx, ly + 8);
+  doc.setFontSize(20); doc.setTextColor(20); const nm = pdfText(name); doc.text(nm, tx, ly + 30);
+  const nw = doc.getTextWidth(nm);
+  doc.setFontSize(9.5); const yw = doc.getTextWidth('2025') + 9;
+  doc.setDrawColor(20); doc.setLineWidth(1); doc.roundedRect(tx + nw + 9, ly + 18.5, yw, 14, 2, 2, 'S');
+  doc.text('2025', tx + nw + 9 + yw / 2, ly + 28.6, { align: 'center' });
   doc.setFont('helvetica', 'normal'); doc.setFontSize(10); doc.setTextColor(90);
   doc.text(full ? 'Full return summary' : 'Return summary', M, 102);
   doc.text('Prepared ' + today, W - M, 102, { align: 'right' });
@@ -1974,10 +2161,17 @@ function makePdf(full, includeZero) {
     columnStyles: { 0: { cellWidth: 52, fontStyle: 'bold' }, 2: { halign: 'right', cellWidth: 110 } },
     didParseCell: d => { if (d.section === 'body' && d.row.index === d.table.body.length - 1) d.cell.styles.fontStyle = 'bold'; if (d.section === 'head' && d.column.index === 2) d.cell.styles.halign = 'right'; },
   });
+  let noteY = doc.lastAutoTable.finalY + 16;
+  const otb = V('ONBEN.L21');
+  if (otb > 0) {
+    doc.setFont('helvetica', 'normal'); doc.setFontSize(9.5); doc.setTextColor(60);
+    doc.text(pdfText('Estimated Ontario Trillium Benefit, July 2026 to June 2027: ' + T.fmtMoney(otb) + ' (paid separately, not part of the refund).'), M, noteY);
+    noteY += 14;
+  }
   const ovKeys = Object.keys(S.values).filter(k => T.ROWS[k] && T.ROWS[k].calc && S.values[k] !== '' && S.values[k] != null);
   if (ovKeys.length) {
     doc.setFontSize(8.5); doc.setTextColor(120); doc.setFont('helvetica', 'normal');
-    doc.text(pdfText(`${ovKeys.length} calculated amount${ovKeys.length > 1 ? 's were' : ' was'} overridden (marked † in the forms).`), M, doc.lastAutoTable.finalY + 16);
+    doc.text(pdfText(`${ovKeys.length} calculated amount${ovKeys.length > 1 ? 's were' : ' was'} overridden (marked † in the forms).`), M, noteY);
   }
   if (S.meta.notes) {
     autoTable(doc, { startY: doc.lastAutoTable.finalY + 26, margin: { left: M, right: M }, theme: 'plain', head: [['File notes']], body: [[pdfText(S.meta.notes)]],
@@ -1986,17 +2180,18 @@ function makePdf(full, includeZero) {
 
   if (full) {
     // Slips
-    const slipIds = Object.keys(SLIP_NAV).filter(id => (S.slips[id] || []).length);
+    const slipIds = Object.keys(ALL_SLIP_NAV).filter(id => (S.slips[id] || []).length);
     if (slipIds.length) {
       doc.addPage(); doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(20); doc.text('Information slips', M, 60);
       let y = 76;
       slipIds.forEach(id => {
         const d = SLIP_BY_ID[id], list = S.slips[id];
         const boxes = d.boxes.filter(([bx]) => includeZero || list.some(s => +((s.boxes || {})[bx]) || 0));
-        const multi = list.length > 1 && id !== 'DON';
-        const head = id === 'DON' ? [["Charity's name", 'Eligible amount']] : [['Box', 'Description', ...(multi ? list.map((s, i) => pdfText(s.payer || '#' + (i + 1))) : [pdfText(list[0].payer || d.payer)]), ...(multi ? ['Total'] : [])]];
-        const body = id === 'DON'
-          ? list.map(s => [pdfText(s.payer || '—'), money(+s.boxes.amt || 0)]).concat([['Total', money(list.reduce((a, s) => a + (+s.boxes.amt || 0), 0))]])
+        const isList = !!d.list;
+        const multi = list.length > 1 && !isList;
+        const head = isList ? [[pdfText(d.payer), ...d.boxes.map(b => pdfText(b[1]))]] : [['Box', 'Description', ...(multi ? list.map((s, i) => pdfText(s.payer || '#' + (i + 1))) : [pdfText(list[0].payer || d.payer)]), ...(multi ? ['Total'] : [])]];
+        const body = isList
+          ? list.map(s => [pdfText(s.payer || '-'), ...d.boxes.map(([bx]) => money(+(s.boxes || {})[bx] || 0))]).concat([['Total', ...d.boxes.map(([bx]) => money(list.reduce((a, s) => a + (+(s.boxes || {})[bx] || 0), 0)))]])
           : boxes.map(([bx, desc, f]) => {
             const vals = list.map(s => +((s.boxes || {})[bx]) || 0);
             const fm = x => f === 'int' || f === 'pct' ? String(x) : money(x);
@@ -2008,12 +2203,13 @@ function makePdf(full, includeZero) {
           head: [[{ content: pdfText(d.title), colSpan: head[0].length }]].concat(head), body,
           styles: { fontSize: 9, cellPadding: 4, lineColor: [210, 210, 210], lineWidth: { bottom: 0.5 } },
           headStyles: { fillColor: [17, 17, 17], textColor: 255, fontStyle: 'bold' },
-          columnStyles: id === 'DON' ? { 1: { halign: 'right', cellWidth: 120 } } : { 0: { cellWidth: 36, fontStyle: 'bold' } },
+          columnStyles: isList ? {} : { 0: { cellWidth: 36, fontStyle: 'bold' } },
           didParseCell: dd => {
-            if (dd.section === 'head' && dd.row.index === 1) { dd.cell.styles.fillColor = [217, 217, 217]; dd.cell.styles.textColor = 20; if (dd.column.index >= 2) dd.cell.styles.halign = 'right'; }
-            if (dd.section === 'body' && id !== 'DON' && dd.column.index >= 2) dd.cell.styles.halign = 'right';
+            const firstNum = isList ? 1 : 2;
+            if (dd.section === 'head' && dd.row.index === 1) { dd.cell.styles.fillColor = [217, 217, 217]; dd.cell.styles.textColor = 20; if (dd.column.index >= firstNum) dd.cell.styles.halign = 'right'; }
+            if (dd.section === 'body' && dd.column.index >= firstNum) dd.cell.styles.halign = 'right';
             if (dd.section === 'body' && multi && dd.column.index === head[0].length - 1) { dd.cell.styles.fillColor = [235, 235, 235]; dd.cell.styles.fontStyle = 'bold'; }
-            if (dd.section === 'body' && id === 'DON' && dd.row.index === body.length - 1) dd.cell.styles.fontStyle = 'bold';
+            if (dd.section === 'body' && isList && dd.row.index === body.length - 1) dd.cell.styles.fontStyle = 'bold';
           },
         });
         y = doc.lastAutoTable.finalY + 18;
