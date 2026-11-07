@@ -684,6 +684,8 @@ const C = {
   transitMax: 3000, transitRate: 0.15,
   careHome: { max: 6000, rate: 0.25, thr: 35000, reduce: 0.05 },
   // Ontario Trillium Benefit, July 2026 – June 2027 (based on the 2025 return)
+  // Moving expenses simplified method, 2025 (canada.ca/taxes-travel-costs): $23 per meal, max 3 per person per day; cents/km by province where travel begins
+  move: { meal: 23, km: { AB: 56.5, BC: 59.5, MB: 56.0, NB: 59.5, NL: 61.5, NT: 70.0, NS: 59.5, NU: 70.5, ON: 62.0, PE: 58.5, QC: 60.5, SK: 55.5, YT: 70.5 }, maintainCap: 5000, minKm: 40 },
   otb: { energyMax: 290, ptCap: 944, ptAdd: 73, ptCapSr: 581, ptAddSr: 617, studentRes: 25,
          thrSingle: 29047, thrFamily: 36309, thrSrSingle: 36309, thrSrFamily: 43571, reduce: 0.02,
          ostc: 378, ostcSingle: 29047, ostcFamily: 36309, ostcReduce: 0.04,
@@ -994,7 +996,7 @@ function buildForms() {
     I(42, '21500', 'Disability supports deduction', { req: 'T929' }),
     I(null, '21699', 'Business investment loss – gross', { sub: true, req: 'T4037' }),
     I(43, '21700', 'Business investment loss – allowable deduction'),
-    I(44, '21900', 'Moving expenses', { req: 'T1-M' }),
+    F(44, '21900', 'Moving expenses', c => c.m.moved ? c.v('T1M.L29') : 0, { req: 'T1-M', note: 'From Form T1-M line 29. Tick "Moved in 2025" in Client details to use the form.' }),
     I(null, '21999', 'Support payments made – total', { sub: true, req: 'P102' }),
     I(45, '22000', 'Support payments made – allowable deduction'),
     I(46, '22100', 'Carrying charges, interest expenses, and other expenses'),
@@ -1671,7 +1673,50 @@ function buildForms() {
     F(null, '9946', 'Your net income (loss) (line P3 minus line 9945)', c => c.v('T2125.P3') - c.v('T2125.9945'), { total: true, key: true }),
   ]};
 
-  return [T1, T2125, ON428, ON428A, ON479, ONBEN, S3, S6, S7, S8, S9, S11, T2204, FW];
+  const mv = c => !!c.m.moved;
+  const T1M = { id: 'T1M', title: 'T1-M – Moving Expenses Deduction', color: 'blue', when: m => !!m.moved, rows: [
+    H('Part 2 – Distance (km)'),
+    I(1, null, 'Distance from your old home to your new work or school location', { fmt: 'int' }),
+    I(2, null, 'Distance from your new home to your new work or school location', { fmt: 'int' }),
+    F(3, null, 'Line 1 minus line 2 (must be 40 km or more to claim)', c => c.v('T1M.L1') - c.v('T1M.L2'), { fmt: 'int', note: 'Shortest usual public route. If under 40 km, no moving expenses can be deducted.' }),
+    H('Part 4 – Transportation and storage'),
+    I(4, null, 'Transportation and storage costs for household items (movers, packing, hauling, in-transit storage, insurance)'),
+    H('Travel from old home to new home'),
+    I(null, null, 'Household members who travelled', { k: 'TPPL', sub: true, fmt: 'int' }),
+    I(null, null, 'Kilometres driven (all vehicles)', { k: 'TKM', sub: true, fmt: 'int' }),
+    F(5, null, 'Vehicle expenses (simplified: km × provincial rate)', c => mv(c) ? c.v('T1M.TKM') * (C.move.km[c.m.moveProv || 'ON'] || C.move.km.ON) / 100 : 0, { note: 'Simplified method uses the 2025 rate for the province where travel began (Ontario 62.0¢/km). Override with the detailed amount if using receipts.' }),
+    I(6, null, 'Accommodation expenses while travelling'),
+    I(null, null, 'Meals during travel (total meals, all household members; max 3 per person per day)', { k: 'TML', sub: true, fmt: 'int' }),
+    F(7, null, 'Meal expenses (simplified: $23 per meal)', c => mv(c) ? c.v('T1M.TML') * C.move.meal : 0, { note: 'Override with actual receipts if using the detailed method.' }),
+    F(8, null, 'Travel expenses (lines 5 to 7)', c => c.v('T1M.L5') + c.v('T1M.L6') + c.v('T1M.L7')),
+    H('Temporary living expenses (maximum 15 days, near the new or old home)'),
+    I(9, null, 'Accommodation expenses'),
+    I(null, null, 'Meals (total meals, all household members)', { k: 'LML', sub: true, fmt: 'int' }),
+    F(10, null, 'Meal expenses (simplified: $23 per meal)', c => mv(c) ? c.v('T1M.LML') * C.move.meal : 0),
+    F(11, null, 'Temporary living expenses (lines 9 and 10)', c => c.v('T1M.L9') + c.v('T1M.L10')),
+    H('Lease, incidental, and old-home costs'),
+    I(12, null, 'Cost of cancelling the lease for the old home'),
+    I(13, null, 'Incidental costs (changing address, replacing driver\'s licence and vehicle permits, utility hook-ups and disconnections)'),
+    I(14, null, 'Costs to maintain the old home when vacant (interest, property tax, insurance, heat, power; maximum $5,000)', { cap: () => C.move.maintainCap }),
+    F(15, null, 'Lines 12 to 14', c => c.v('T1M.L12') + c.v('T1M.L13') + c.v('T1M.L14')),
+    H('Selling the old home'),
+    I(16, null, 'Real estate commission'), I(17, null, 'Legal or notarial fees'), I(18, null, 'Advertising'), I(19, null, 'Other selling costs'),
+    F(20, null, 'Selling costs (lines 16 to 19)', c => c.v('T1M.L16') + c.v('T1M.L17') + c.v('T1M.L18') + c.v('T1M.L19')),
+    H('Buying the new home (only if the old home was sold because of the move)'),
+    I(21, null, 'Legal or notarial fees'), I(22, null, 'Taxes paid for registering or transferring title (not GST/HST)'),
+    F(23, null, 'Buying costs (lines 21 and 22)', c => c.v('T1M.L21') + c.v('T1M.L22')),
+    H('Total and limit'),
+    I(null, null, 'Unclaimed moving expenses from prior years (same move; line 30 of last year\'s T1-M)', { k: 'CF' }),
+    F(24, null, 'Total moving expenses (lines 4, 8, 11, 15, 20, 23, and prior-year unclaimed)', c => sum(...['L4','L8','L11','L15','L20','L23','CF'].map(k => c.v('T1M.' + k))), { total: true }),
+    I(25, null, 'Reimbursements or allowances for these expenses that are not included in income'),
+    F(26, null, 'Net moving expenses (line 24 minus line 25)', c => pos(c.v('T1M.L24') - c.v('T1M.L25'))),
+    F(27, null, 'Amount from line 26', c => c.v('T1M.L26')),
+    I(28, null, 'Net eligible income earned at the new location', { note: 'Employment or self-employment income earned at the new location (after related deductions such as RPP, union dues, CPP on self-employment), or for students the taxable scholarships, bursaries, and research grants.' }),
+    F(29, null, 'Allowable moving expenses (lesser of line 27 and line 28)', c => (mv(c) && c.v('T1M.L3') >= C.move.minKm) ? Math.min(c.v('T1M.L27'), pos(c.v('T1M.L28'))) : 0, { total: true, key: true, note: 'Goes to T1 line 21900.' }),
+    F(30, null, 'Unused moving expenses to carry forward (line 27 minus line 29)', c => mv(c) ? pos(c.v('T1M.L27') - c.v('T1M.L29')) : 0),
+  ]};
+
+  return [T1, T2125, T1M, ON428, ON428A, ON479, ONBEN, S3, S6, S7, S8, S9, S11, T2204, FW];
 }
 
 const FORMS = buildForms();
@@ -1703,7 +1748,7 @@ function blankState() {
     meta: { clientName: '', taxYear: 2025, birthYear: '', dtc: false, hasSpouse: false,
             spouseNetIncome: 0, spouseWorkingIncome: 0, spouseClaim: false, spouseInfirm: false, spouseDTC: false,
             dependantClaim: false, dependantNetIncome: 0, family: false, cwbEligible: true,
-            onChildren: 0, onImpaired: 0, notes: '', rifSpouseDeath: false, spouse70: false, northern: false, studentRes: false, bizName: '', bizIndustry: '', bizType: 'business', bizShare: 100 },
+            onChildren: 0, onImpaired: 0, notes: '', moved: false, moveProv: 'ON', moveDate: '', moveStart: '', moveReason: 'work', moveOld: '', moveNew: '', moveDest: '', rifSpouseDeath: false, spouse70: false, northern: false, studentRes: false, bizName: '', bizIndustry: '', bizType: 'business', bizShare: 100 },
     slips: {},       // slipId -> [{payer, boxes:{box:value}}]
     values: {},      // fullKey -> number (input rows, and overrides of calculated rows)
     notes: {},       // fullKey -> text
@@ -1774,6 +1819,14 @@ function review(state, res) {
   });
   if (v('T1.14500') > 0 && state.meta.hasSpouse) out.push({ level: 'info', key: 'T1.14500', text: 'Social assistance reported: if married or common-law, it goes on the return of the spouse with the higher net income.' });
   if ((state.slips.T5013 || []).some(s => +(s.boxes || {})['116'])) out.push({ level: 'info', key: 'T1.13500', text: 'T5013 box 116 is on line 13500 (active partner). If the client is not actively involved, move it to line 12200.' });
+  if (state.meta.moved) {
+    const v = k => res.value[k] || 0;
+    if (v('T1M.L1') === 0 && v('T1M.L2') === 0) out.push({ level: 'warn', key: 'T1M.L1', text: 'Moving expenses: enter the distances on T1-M lines 1 and 2 (the new home must be at least 40 km closer).' });
+    else if (v('T1M.L3') < 40) out.push({ level: 'warn', key: 'T1M.L3', text: 'Moving expenses: the new home is less than 40 km closer to the new work or school, so nothing can be deducted.' });
+    if (v('T1M.L26') > 0 && v('T1M.L28') <= 0) out.push({ level: 'warn', key: 'T1M.L28', text: 'Moving expenses: enter net eligible income earned at the new location on T1-M line 28. The deduction is limited to that income.' });
+    if (v('T1M.L30') > 0) out.push({ level: 'info', key: 'T1M.L30', text: `Moving expenses: ${fmtMoney(v('T1M.L30'))} is unused and can be carried forward against income at the new location next year.` });
+    if (!state.meta.moveDate) out.push({ level: 'info', key: 'T1M.L1', text: 'Moving expenses: add the move details (dates, addresses, reason) in Client details for the T1-M.' });
+  }
   if ((state.slips.UNION || []).length && (state.slips.T4 || []).some(s => +((s.boxes || {})['44']) > 0)) out.push({ level: 'warn', key: 'T1.21200', text: 'Union dues are entered on both a T4 (box 44) and a dues receipt. Line 21200 adds them together, so make sure the receipt is not for the same dues.' });
   if ((state.slips.PTAX || []).length && parseInt(state.meta.birthYear, 10) <= 1961) out.push({ level: 'info', key: 'ONBEN.L2', text: 'Senior homeowner: the Ontario senior homeowners\' property tax grant is also claimed on ON-BEN (up to $500; CRA calculates it).' });
   (state.slips.T4AP || []).forEach((s, i) => {
@@ -1796,6 +1849,7 @@ function migrate(st) {
   Object.entries(MOVED).forEach(([from, to]) => {
     if (st.values[from] !== undefined && st.values[to] === undefined && !(st.v >= 2)) { st.values[to] = st.values[from]; delete st.values[from]; }
   });
+  if (st.values['T1.21900'] && st.meta && st.meta.moved === undefined) st.meta.moved = true;
   st.v = 2;
   return st;
 }
@@ -1844,7 +1898,7 @@ const LIST_HINT = { DON: 'One row per official receipt. The total feeds Schedule
   RENT: 'Rent paid in 2025 for a principal residence in Ontario. Feeds ON-BEN.',
   PTAX: 'Property tax paid in 2025 for a principal residence in Ontario. Feeds ON-BEN.' };
 const ALL_SLIP_NAV = Object.assign({}, SLIP_NAV, RECEIPT_NAV);
-const FORM_NAV = { T1: 'T1 Return', T2125: 'T2125 Business', ON428: 'ON428 Ontario Tax', ON428A: 'ON428-A LIFT', ON479: 'ON479 Ontario Credits', ONBEN: 'ON-BEN Trillium (est.)', S3: 'Schedule 3', S6: 'Schedule 6', S7: 'Schedule 7', S8: 'Schedule 8', S9: 'Schedule 9', S11: 'Schedule 11', T2204: 'T2204', FW: 'Federal Worksheet' };
+const FORM_NAV = { T1: 'T1 Return', T2125: 'T2125 Business', T1M: 'T1-M Moving expenses', ON428: 'ON428 Ontario Tax', ON428A: 'ON428-A LIFT', ON479: 'ON479 Ontario Credits', ONBEN: 'ON-BEN Trillium (est.)', S3: 'Schedule 3', S6: 'Schedule 6', S7: 'Schedule 7', S8: 'Schedule 8', S9: 'Schedule 9', S11: 'Schedule 11', T2204: 'T2204', FW: 'Federal Worksheet' };
 
 /* ---------------- storage ---------------- */
 let store, S, res, checks = [];
@@ -1925,7 +1979,7 @@ function renderSide() {
   sd.append(h('div', { class: 'grp' }, 'Receipts'));
   Object.entries(RECEIPT_NAV).forEach(([id, nm]) => sd.append(item('slip:' + id, 'grey', nm)));
   sd.append(h('div', { class: 'grp' }, 'Forms'));
-  T.FORMS.forEach(f => sd.append(item('form:' + f.id, f.color, FORM_NAV[f.id] || f.id)));
+  T.FORMS.filter(f => !f.when || f.when(S.meta)).forEach(f => sd.append(item('form:' + f.id, f.color, FORM_NAV[f.id] || f.id)));
 }
 function refreshSide() {
   $$('#side .nav').forEach(b => b.classList.toggle('on', b.dataset.view === store.ui.view));
@@ -2228,6 +2282,22 @@ function renderDetails(m) {
     h('div', { class: 'fgrid' }, txt('bizName', 'Business name'), txt('bizIndustry', 'Industry code (NAICS)', 'Six-digit code from the T4002 guide.'),
       h('div', { class: 'fld' }, h('label', { for: 'm_bizType' }, 'Type of income'), sel),
       txt('bizShare', 'Your percentage of the business (%)', '100 unless the business is a partnership.', 'number'))));
+  const mvCard = h('div', { class: 'card' }, h('h2', null, 'Moving expenses (Form T1-M)'),
+    h('label', { class: 'chk' }, h('input', { type: 'checkbox', checked: !!M.moved, onchange: e => { M.moved = e.target.checked; changed(); renderSide(); renderMain(); } }),
+      h('span', null, 'Moved in 2025 for work, self-employment, or full-time post-secondary studies (claim moving expenses on line 21900)')));
+  if (M.moved) {
+    const sl = (k, opts) => h('select', { id: 'm_' + k, onchange: e => { M[k] = e.target.value; changed(); } }, ...opts.map(([v, l]) => h('option', { value: v, selected: (M[k] || opts[0][0]) === v }, l)));
+    const provs = [['ON','Ontario'],['AB','Alberta'],['BC','British Columbia'],['MB','Manitoba'],['NB','New Brunswick'],['NL','Newfoundland and Labrador'],['NT','Northwest Territories'],['NS','Nova Scotia'],['NU','Nunavut'],['PE','Prince Edward Island'],['QC','Quebec'],['SK','Saskatchewan'],['YT','Yukon']];
+    mvCard.append(h('div', { class: 'fgrid', style: 'margin-top:10px' },
+      txt('moveDate', 'Date of move', null, 'date'),
+      txt('moveStart', 'Started work, business, or full-time study at the new location', null, 'date'),
+      h('div', { class: 'fld' }, h('label', { for: 'm_moveReason' }, 'Main reason for the move'), sl('moveReason', [['work', 'Work or running a business'], ['study', 'Full-time post-secondary study']])),
+      h('div', { class: 'fld' }, h('label', { for: 'm_moveProv' }, 'Province or territory where travel began'), sl('moveProv', provs), h('div', { class: 'help' }, 'Sets the simplified per-km vehicle rate.')),
+      txt('moveOld', 'Old home address'), txt('moveNew', 'New home address'),
+      txt('moveDest', 'Employer, business, or school after the move (name and address)')),
+      h('div', { style: 'margin-top:8px' }, h('button', { class: 'btn', onclick: () => go('form:T1M') }, 'Open Form T1-M →')));
+  }
+  m.append(mvCard);
   m.append(h('div', { class: 'card' }, h('h2', null, 'Ontario Trillium Benefit and other details'),
     chk('northern', 'Lived in Northern Ontario on December 31, 2025 (Northern Ontario energy credit)'),
     chk('studentRes', 'Lived in a designated Ontario student residence in 2025'),
@@ -2431,7 +2501,7 @@ function makePdf(full, includeZero) {
       });
     }
     // Forms
-    T.FORMS.forEach(f => {
+    T.FORMS.filter(f => !f.when || f.when(S.meta)).forEach(f => {
       const rows = []; const grp = groupOf(f); const emitted = {};
       f.rows.forEach(r => {
         if (r.h) return;
@@ -2448,6 +2518,14 @@ function makePdf(full, includeZero) {
       doc.addPage();
       doc.setFont('helvetica', 'bold'); doc.setFontSize(16); doc.setTextColor(20); doc.text(pdfText(f.title), M, 60, { maxWidth: W - 2 * M });
       const body = [];
+      if (f.id === 'T1M') {
+        const Mm = S.meta, dt = d => d ? d : '—';
+        body.push([{ content: 'Part 3 – Details of the move', colSpan: 4, styles: { fillColor: COL[f.color], fontStyle: 'bold', halign: 'center' } }]);
+        [['Date of move', dt(Mm.moveDate)], ['Started work, business, or study at new location', dt(Mm.moveStart)],
+         ['Main reason', Mm.moveReason === 'study' ? 'Full-time post-secondary study' : 'Work or running a business'],
+         ['Old home', dt(Mm.moveOld)], ['New home', dt(Mm.moveNew)], ['Employer, business, or school', dt(Mm.moveDest)],
+         ['Travel began in', Mm.moveProv || 'ON']].forEach(([l, v]) => body.push(['', '', pdfText(l), { content: pdfText(v), styles: { halign: 'right' } }]));
+      }
       rows.forEach(x => {
         if (x.hd) { body.push([{ content: pdfText(x.hd), colSpan: 4, styles: { fillColor: COL[f.color], fontStyle: 'bold', halign: 'center' } }]); return; }
         const r = x.r;
