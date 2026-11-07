@@ -7,6 +7,7 @@
 <meta name="robots" content="noindex, nofollow">
 <meta name="referrer" content="no-referrer">
 <title>BenTax 2025</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23111'/%3E%3Ctext x='32' y='41' text-anchor='middle' font-family='Arial,Helvetica,sans-serif' font-weight='700' font-size='38' fill='%23fff'%3EB%3C/text%3E%3Crect x='12' y='50' width='12' height='5' rx='1.5' fill='%23b6d7a8'/%3E%3Crect x='26' y='50' width='12' height='5' rx='1.5' fill='%23ea9999'/%3E%3Crect x='40' y='50' width='12' height='5' rx='1.5' fill='%23a4c2f4'/%3E%3C/svg%3E">
 <style>:root{
   --ink:#1d1d1f; --ink2:#55575c; --ink3:#8a8d93; --line:#e4e4e2; --line2:#d6d6d3;
   --bg:#ffffff; --side:#f7f7f5; --hover:#f1f1ee;
@@ -180,19 +181,28 @@ button{cursor:pointer}
 .autoline:empty{display:none}
 .ovr .val:hover::before{content:"edit"}
 .stable thead .ds{text-align:left}
+.brand .logo{display:block;flex:none}
+.fstat{font-size:12px;color:var(--ink3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px;margin-right:4px}
+.fstat::before{content:"";display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:1px;background:#c9c9c4}
+.fstat.saved::before{background:var(--good)}
+.fstat.dirty::before,.fstat.saving::before{background:#d29a1e}
+.fstat.error{color:var(--bad)} .fstat.error::before{background:var(--bad)}
+@media (max-width:1200px){.fstat{max-width:160px}}
 </style>
 </head>
 <body>
 <header class="top">
-  <div class="brand">BenTax <span class="yr">2025</span></div>
+  <div class="brand"><svg class="logo" viewBox="0 0 64 64" width="30" height="30" aria-hidden="true"><rect width="64" height="64" rx="12" fill="#111"/><text x="32" y="41" text-anchor="middle" font-family="Arial,Helvetica,sans-serif" font-weight="700" font-size="38" fill="#fff">B</text><rect x="12" y="50" width="12" height="5" rx="1.5" fill="#b6d7a8"/><rect x="26" y="50" width="12" height="5" rx="1.5" fill="#ea9999"/><rect x="40" y="50" width="12" height="5" rx="1.5" fill="#a4c2f4"/></svg>BenTax <span class="yr">2025</span></div>
   <div class="client">
     <select id="returnSel" aria-label="Open return"></select>
     <button class="btn ghost" id="btnNew" title="Start a new return">+ New</button>
     <button class="btn ghost" id="btnDel" title="Delete this return from this browser">Delete</button>
   </div>
   <div class="actions">
-    <button class="btn" id="btnImport">Open file</button>
-    <button class="btn" id="btnExport">Save file</button>
+    <span class="fstat none" id="fileStatus"></span>
+    <button class="btn" id="btnImport" title="Open a saved return (Ctrl/⌘+O)">Open file</button>
+    <button class="btn" id="btnExport" title="Save to the linked file (Ctrl/⌘+S)">Save file</button>
+    <button class="btn ghost" id="btnSaveAs" title="Save to a new file (Ctrl/⌘+Shift+S)">Save as…</button>
     <button class="btn primary" id="btnPdf">Download PDF</button>
     <div class="menu" id="pdfMenu" role="dialog" aria-label="PDF options">
       <h3>Download PDF</h3>
@@ -1539,7 +1549,7 @@ const canon = T.canon;
 /* ---------------- recompute ---------------- */
 function recompute() { res = T.evaluate(S); checks = T.review(S, res); }
 function V(k) { return res.value[canon(k)]; }
-function changed() { recompute(); save(); refresh(); }
+function changed() { recompute(); save(); refresh(); markDirty(); }
 
 /* ---------------- top bar ---------------- */
 function renderTop() {
@@ -1848,22 +1858,79 @@ function renderReview(m) {
 /* ---------------- import / export ---------------- */
 function safeName(s) { return (s || 'Untitled').replace(/[^\w\- ]+/g, '').trim().slice(0, 60) || 'Untitled'; }
 function download(blob, name) { const a = h('a', { href: URL.createObjectURL(blob), download: name }); document.body.append(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
-function exportFile() {
-  const data = JSON.stringify({ app: 'BenTax', version: 1, taxYear: 2025, exported: new Date().toISOString(), return: S }, null, 2);
-  download(new Blob([data], { type: 'application/json' }), `BenTax 2025 - ${safeName(S.meta.clientName)}.json`);
+/* Linked data files: with the File System Access API (Chrome, Edge, Opera), a return is tied to a .json file on
+   the computer and every change is written back to it. Elsewhere, Save downloads the file and Open uploads it. */
+const FS = 'showSaveFilePicker' in window && 'showOpenFilePicker' in window;
+const handles = {};            // returnId -> FileSystemFileHandle (kept for this session)
+const fileState = {};          // returnId -> { name, status: 'saved'|'dirty'|'saving'|'error' }
+const PICK = { types: [{ description: 'BenTax return', accept: { 'application/json': ['.json'] } }], excludeAcceptAllOption: false };
+function serialize(st) { return JSON.stringify({ app: 'BenTax', version: 1, taxYear: 2025, saved: new Date().toISOString(), return: st }, null, 2); }
+function parseReturn(text) {
+  const d = JSON.parse(text); const st = d.return || d;
+  if (!st || !st.meta || !st.values) throw new Error('bad');
+  const base = T.blankState(); st.meta = Object.assign(base.meta, st.meta); st.slips = st.slips || {}; st.notes = st.notes || {};
+  return st;
+}
+function fileName() { return `BenTax 2025 - ${safeName(S.meta.clientName)}.json`; }
+async function writeTo(id) {
+  const hd = handles[id]; if (!hd) return false;
+  fileState[id] = Object.assign(fileState[id] || {}, { name: hd.name, status: 'saving' }); renderFileStatus();
+  try {
+    if (hd.queryPermission && (await hd.queryPermission({ mode: 'readwrite' })) !== 'granted') {
+      if ((await hd.requestPermission({ mode: 'readwrite' })) !== 'granted') throw new Error('denied');
+    }
+    const w = await hd.createWritable(); await w.write(serialize(store.returns[id])); await w.close();
+    fileState[id].status = 'saved'; renderFileStatus(); return true;
+  } catch (e) { fileState[id].status = 'error'; renderFileStatus(); return false; }
+}
+async function saveFile(forceAs) {
+  const id = store.current;
+  if (FS) {
+    if (!handles[id] || forceAs) {
+      try { handles[id] = await window.showSaveFilePicker(Object.assign({ suggestedName: fileName() }, PICK)); }
+      catch (e) { return; }   // cancelled
+    }
+    if (await writeTo(id)) toast('Saved to ' + handles[id].name); else toast('Could not save the file');
+  } else {
+    download(new Blob([serialize(S)], { type: 'application/json' }), fileName());
+    fileState[id] = { name: fileName(), status: 'saved' }; renderFileStatus();
+  }
+}
+function adopt(st, handle, name) {
+  // If this file is already open, switch to it instead of duplicating
+  const existing = handle && Object.keys(handles).find(k => store.returns[k] && handles[k] && handles[k].name === handle.name && JSON.stringify(store.returns[k]) === JSON.stringify(st));
+  const id = existing || uid();
+  store.returns[id] = st; store.current = id; S = st;
+  if (handle) handles[id] = handle;
+  fileState[id] = { name: name, status: 'saved' };
+  recompute(); save(); renderAll(); toast('Opened ' + (st.meta.clientName || name));
+}
+async function openFile() {
+  if (FS) {
+    let hd;
+    try { [hd] = await window.showOpenFilePicker(Object.assign({ multiple: false }, PICK)); } catch (e) { return; }
+    try { const f = await hd.getFile(); adopt(parseReturn(await f.text()), hd, hd.name); }
+    catch (e) { toast('That file is not a BenTax return'); }
+  } else $('#fileIn').click();
 }
 function importFile(file) {
   const fr = new FileReader();
-  fr.onload = () => {
-    try {
-      const d = JSON.parse(fr.result); const st = d.return || d;
-      if (!st || !st.meta || !st.values) throw new Error('bad');
-      const base = T.blankState(); st.meta = Object.assign(base.meta, st.meta); st.slips = st.slips || {}; st.notes = st.notes || {};
-      const id = uid(); store.returns[id] = st; store.current = id; S = st;
-      changed(); renderAll(); toast('Opened ' + (st.meta.clientName || 'return'));
-    } catch (e) { toast('That file is not a BenTax return'); }
-  };
+  fr.onload = () => { try { adopt(parseReturn(fr.result), null, file.name); } catch (e) { toast('That file is not a BenTax return'); } };
   fr.readAsText(file);
+}
+let fileTimer;
+function markDirty() {
+  const id = store.current; if (!fileState[id]) return;
+  fileState[id].status = 'dirty'; renderFileStatus();
+  if (handles[id]) { clearTimeout(fileTimer); fileTimer = setTimeout(() => writeTo(id), 800); }
+}
+function renderFileStatus() {
+  const el = $('#fileStatus'); if (!el) return;
+  const f = fileState[store.current];
+  if (!f) { el.textContent = 'Not saved to a file'; el.className = 'fstat none'; el.title = ''; return; }
+  const linked = !!handles[store.current];
+  const msg = { saved: linked ? 'Saved' : 'Downloaded', dirty: linked ? 'Saving…' : 'Unsaved changes', saving: 'Saving…', error: 'Save failed. Click Save' }[f.status];
+  el.textContent = f.name + ' · ' + msg; el.className = 'fstat ' + f.status; el.title = linked ? 'Changes are written to this file automatically' : 'Click Save file to download an updated copy';
 }
 
 /* ---------------- PDF ---------------- */
@@ -2013,7 +2080,7 @@ function deleteReturn() {
 }
 
 /* ---------------- init ---------------- */
-function renderAll() { renderTop(); renderStrip(); renderSide(); renderMain(); refresh(); }
+function renderAll() { renderTop(); renderStrip(); renderSide(); renderMain(); refresh(); renderFileStatus(); }
 function init() {
   store = loadStore(); store.ui = store.ui || { view: 'details' };
   if (!store.returns[store.current]) store.current = Object.keys(store.returns)[0];
@@ -2021,8 +2088,14 @@ function init() {
   $('#returnSel').addEventListener('change', e => { store.current = e.target.value; S = cur(); changed(); renderAll(); });
   $('#btnNew').addEventListener('click', newReturn);
   $('#btnDel').addEventListener('click', deleteReturn);
-  $('#btnExport').addEventListener('click', exportFile);
-  $('#btnImport').addEventListener('click', () => $('#fileIn').click());
+  $('#btnExport').addEventListener('click', () => saveFile(false));
+  $('#btnSaveAs').addEventListener('click', () => saveFile(true));
+  $('#btnImport').addEventListener('click', openFile);
+  document.addEventListener('keydown', e => {
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (document.activeElement) document.activeElement.blur(); saveFile(e.shiftKey); }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); openFile(); }
+  });
+  window.addEventListener('beforeunload', e => { const f = fileState[store.current]; if (f && f.status === 'dirty' && !handles[store.current]) { e.preventDefault(); e.returnValue = ''; } });
   $('#fileIn').addEventListener('change', e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; });
   $('#btnPdf').addEventListener('click', e => { e.stopPropagation(); $('#pdfMenu').classList.toggle('open'); });
   $('#pdfMenu').addEventListener('click', e => e.stopPropagation());
@@ -2031,7 +2104,7 @@ function init() {
   $('#pdfFull').addEventListener('click', () => downloadPdf(true));
   renderAll();
 }
-window.BenTaxApp = { get state() { return S; }, get result() { return res; }, makePdf, go, changed };
+window.BenTaxApp = { saveFile, openFile, fileState, handles, get state() { return S; }, get result() { return res; }, makePdf, go, changed };
 document.addEventListener('DOMContentLoaded', init);
 })();
 </script>
