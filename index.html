@@ -188,6 +188,16 @@ button{cursor:pointer}
 .fstat.dirty::before,.fstat.saving::before{background:#d29a1e}
 .fstat.error{color:var(--bad)} .fstat.error::before{background:var(--bad)}
 @media (max-width:1200px){.fstat{max-width:160px}}
+.srchbar{display:flex;align-items:center;gap:10px;margin:0 0 12px;max-width:100%}
+.srchbar .srch-ic{color:var(--ink3);margin-right:-34px;z-index:1;line-height:0;padding-left:11px}
+.srch{flex:0 1 520px;border:1px solid var(--line2);border-radius:7px;padding:8px 12px 8px 34px;background:#fff;outline:none}
+.srch:focus{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+.srch-count{font-size:12px;color:var(--ink3);min-width:60px}
+.stable .ds .dest{display:block;font-weight:400;color:#a3a3a3;font-size:11.5px;margin-top:1px}
+tr.nomatch{display:none}
+.stable .ds{position:relative}
+.stable tbody tr:focus-within .ds::before{content:'';position:absolute;left:1px;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:50%;background:#fff}
+.stable tbody .ds,.stable thead .ds{padding-left:18px}
 </style>
 </head>
 <body>
@@ -748,6 +758,14 @@ function rif(c) {
 // T5008 gain or loss per slip: proceeds (21) minus cost (20) minus outlays
 const t5008Gain = c => c.slipRows('T5008').reduce((t, b) => t + (+b['21'] || 0) - (+b['20'] || 0) - (+b['oe'] || 0), 0);
 
+const bizType = c => c.m.bizType || 'business';
+const T4A_EMP = ['104', '107', '118', '119', '127', '132', '152', '156'];
+const T4A_OTHER = ['018', '028', '030', '040', '042', '106', '109', '117', '123', '125', '129', '130', '134', '136', '150', '154', '197', '198', '199', '200', '202', '203', '204', '205', '211'];
+const T4A_AGE = ['024', '133', '194'];   // line 11500 if 65+ or received on a spouse's death, otherwise line 13000
+const sBoxes = (c, slip, boxes) => boxes.reduce((t, k) => t + c.s(slip, k), 0);
+const t4aAge = c => sBoxes(c, 'T4A', T4A_AGE);
+const pensionSr = c => c.m.age65 || c.m.rifSpouseDeath;
+
 function politicalCredit(c) {
   c = pos(c);
   let cr = 0.75 * Math.min(c, 400);
@@ -768,11 +786,74 @@ const SLIPS = [
     ['42', 'Employment commissions'], ['43', 'Canadian Armed Forces personnel and police deduction'],
     ['44', 'Union dues'], ['52', 'Pension adjustment'], ['55', "Employee's PPIP premiums"]] },
   { id: 'T4A', title: 'T4A – Statement of Pension, Retirement, Annuity, and Other Income', payer: "Payer's name", boxes: [
-    ['016', 'Pension or superannuation'], ['018', 'Lump-sum payments'], ['020', 'Self-employed commissions'],
-    ['022', 'Income tax deducted'], ['024', 'Annuities'], ['028', 'Other income'],
-    ['032', 'Registered pension plan contributions (past service)'], ['034', 'Pension adjustment'],
-    ['048', 'Fees for services'], ['105', "Scholarships, fellowships, bursaries, and artists' project grants"],
-    ['131', 'Registered disability savings plan']] },
+    ['016', 'Pension or superannuation', null, 'Line 11500'],
+    ['018', 'Lump-sum payments', null, 'Line 13000'],
+    ['020', 'Self-employed commissions', null, 'Lines 13899 and 13900 (T2125 if commission business)'],
+    ['022', 'Income tax deducted', null, 'Line 43700'],
+    ['024', 'Annuities', null, 'Line 11500 if 65+ (or on a spouse\'s death), otherwise 13000'],
+    ['028', 'Other income', null, 'Line 13000'],
+    ['030', 'Patronage allocations', null, 'Line 13000'],
+    ['032', 'Registered pension plan contributions (past service)', null, 'Line 20700'],
+    ['034', 'Pension adjustment', null, 'Line 20600 (information only)'],
+    ['037', 'Advanced life deferred annuity purchase', null, 'Do not report'],
+    ['040', 'RESP accumulated income payments', null, 'Line 13000 (and Form T1172)'],
+    ['042', 'RESP educational assistance payments', null, 'Line 13000'],
+    ['046', 'Charitable donations', null, 'Schedule 9, line 1'],
+    ['048', 'Fees for services', null, 'Form T2125 (lines 13499 to 14300)'],
+    ['102', 'Lump-sum payments – non-resident services transferred (included in box 018)', null, 'Do not report separately'],
+    ['104', 'Research grants', null, 'Line 10400 (net of expenses)'],
+    ['105', "Scholarships, fellowships, bursaries, and artists' project grants", null, 'Line 13010'],
+    ['106', 'Death benefits', null, 'Line 13000'],
+    ['107', 'Payments from a wage-loss replacement plan', null, 'Line 10400'],
+    ['108', 'Lump-sum payments from a registered pension plan not eligible for transfer (included in box 018)', null, 'Do not report separately'],
+    ['109', 'Periodic payments from an unregistered plan', null, 'Line 13000'],
+    ['110', 'Lump-sum payments – accrued to December 31, 1971 (included in box 018)', null, 'Do not report separately'],
+    ['111', 'Income-averaging annuity contract (included in box 024)', null, 'Do not report separately'],
+    ['115', 'DPSP annuity or instalment payments (included in box 024)', null, 'Do not report separately'],
+    ['116', 'Medical travel assistance', null, 'Do not report'],
+    ['117', 'Loan benefits', null, 'Line 13000'],
+    ['118', 'Medical premium benefits', null, 'Line 10400'],
+    ['119', 'Premiums paid to a group term life insurance plan', null, 'Line 10400'],
+    ['122', 'RESP accumulated income payments paid to other (included in box 040)', null, 'Do not report separately'],
+    ['123', 'Payments from a revoked DPSP', null, 'Line 13000'],
+    ['124', 'Board and lodging at special work sites', null, 'Do not report'],
+    ['125', 'Disability benefits paid out of a superannuation or pension plan', null, 'Line 13000'],
+    ['126', 'Pre-1990 past service contributions (included in box 032)', null, 'Do not report separately'],
+    ['127', "Veterans' benefits", null, 'Line 10400'],
+    ['128', 'Veterans\' benefits eligible for pension splitting (included in box 016)', null, 'Do not report separately'],
+    ['129', 'Tax-deferred cooperative share', null, 'Line 13000'],
+    ['130', 'Apprenticeship incentive grant or completion grant', null, 'Line 13000'],
+    ['131', 'Registered disability savings plan', null, 'Line 12500'],
+    ['132', 'Wage Earner Protection Program', null, 'Line 10400'],
+    ['133', 'Variable pension benefits', null, 'Line 11500 if 65+ (or on a spouse\'s death), otherwise 13000'],
+    ['134', 'Tax-free savings account (TFSA) taxable amount', null, 'Line 13000'],
+    ['135', 'Recipient-paid premiums for private health services plans', null, 'Line 33099 (medical expenses)'],
+    ['136', 'Parents of murdered or missing children / young victims of crime', null, 'Line 13000'],
+    ['144', 'Indian Act (exempt income) – other income', null, 'Do not report'],
+    ['146', 'Indian Act (exempt income) – pension or superannuation', null, 'Do not report'],
+    ['148', 'Indian Act (exempt income) – lump-sum payments', null, 'Do not report'],
+    ['150', 'Labour Adjustment Benefits Act and Appropriation Acts', null, 'Line 13000'],
+    ['152', 'SUBP qualified under the Income Tax Act', null, 'Line 10400'],
+    ['154', 'Cash award or prize from payer', null, 'Line 13000'],
+    ['156', 'Bankruptcy settlement', null, 'Line 10400'],
+    ['158', 'Lump-sum payments not eligible for transfer (included in box 018)', null, 'Do not report separately'],
+    ['162', 'Pre-1990 past service contributions while a contributor (included in box 032)', null, 'Do not report separately'],
+    ['180', 'Lump-sum payments from a DPSP (included in box 018)', null, 'Do not report separately'],
+    ['190', 'Lump-sum payments from an unregistered plan (included in box 018)', null, 'Do not report separately'],
+    ['194', 'Pooled registered pension plan (PRPP) payments', null, 'Line 11500 if 65+ (or on a spouse\'s death), otherwise 13000'],
+    ['195', 'Indian Act (exempt income) – PRPP payments', null, 'Do not report'],
+    ['196', 'Tuition assistance for adult basic education', null, 'Line 25600 (portion above the scholarship exemption)'],
+    ['197', 'Canada Emergency Response Benefit (CERB)', null, 'Line 13000'],
+    ['198', 'Canada Emergency Student Benefit (CESB)', null, 'Line 13000'],
+    ['199', 'CESB for students with disabilities or dependants', null, 'Line 13000'],
+    ['200', 'Provincial or territorial COVID-19 financial assistance', null, 'Line 13000'],
+    ['201', 'Repayment of COVID-19 financial assistance', null, 'Line 23200 (deduction)'],
+    ['202', 'Canada Recovery Benefit (CRB)', null, 'Line 13000'],
+    ['203', 'Canada Recovery Sickness Benefit (CRSB)', null, 'Line 13000'],
+    ['204', 'Canada Recovery Caregiving Benefit (CRCB)', null, 'Line 13000'],
+    ['205', 'One-time payment for older seniors', null, 'Line 13000'],
+    ['210', 'Postdoctoral fellowship income (included in box 105)', null, 'Do not report separately'],
+    ['211', 'Canada Worker Lockdown Benefit (CWLB)', null, 'Line 13000']] },
   { id: 'T4AP', title: 'T4A(P) – Statement of Canada Pension Plan Benefits', payer: 'Payer', boxes: [
     ['14', 'Retirement benefit'], ['15', 'Survivor benefit'], ['16', 'Disability benefit'], ['17', 'Child benefit'],
     ['18', 'Death benefit'], ['19', 'Post-retirement benefit'], ['20', 'Taxable CPP benefits (total of boxes 14 to 19)'], ['22', 'Income tax deducted']] },
@@ -828,6 +909,7 @@ const SLIPS = [
   { id: 'DON', title: 'Charitable Donations Tax Receipts', payer: "Charity's name", list: true, boxes: [['amt', 'Eligible amount of gift']] },
   { id: 'RRSPR', title: 'RRSP Contribution Receipts', payer: 'Issuer', list: true, boxes: [['a', 'Mar 4 – Dec 31, 2025'], ['b', 'Jan 1 – Mar 2, 2026']] },
   { id: 'POL', title: 'Political Contribution Receipts', payer: 'Party, association, or candidate', list: true, boxes: [['fed', 'Federal'], ['on', 'Ontario']] },
+  { id: 'UNION', title: 'Union and Professional Dues Receipts', payer: 'Union or professional body', list: true, boxes: [['amt', 'Dues paid in 2025']] },
   { id: 'RENT', title: 'Rent Paid in Ontario (2025)', payer: 'Address and landlord', list: true, boxes: [['amt', 'Rent paid']] },
   { id: 'PTAX', title: 'Property Tax Paid in Ontario (2025)', payer: 'Address and municipality', list: true, boxes: [['amt', 'Property tax paid']] },
 ];
@@ -847,12 +929,12 @@ function buildForms() {
     F(null, '10105', 'Tax-exempt income for emergency services volunteers', null, { input: true, sub: true }),
     F(null, '10120', 'Commissions included on line 10100', c => c.s('T4', '42'), { sub: true }),
     I(null, '10130', 'Wage-loss replacement contributions', { sub: true }),
-    F(2, '10400', 'Other employment income', c => c.s('T4PS', '35') + c.v('T1.OEI')),
+    F(2, '10400', 'Other employment income', c => c.s('T4PS', '35') + sBoxes(c, 'T4A', T4A_EMP) + c.v('T1.OEI'), { note: 'T4PS box 35 and T4A boxes 104, 107, 118, 119, 127, 132, 152, 156.' }),
     I(null, null, 'Other employment income not on a slip', { sub: true, k: 'OEI' }),
     F(3, '11300', 'Old age security (OAS) pension', c => c.s('T4AOAS', '18'), { req: 'T4A(OAS)' }),
     F(4, '11400', 'CPP or QPP benefits', c => c.slipRows('T4AP').reduce((t, b) => t + cppTaxable(b), 0), { req: 'T4A(P)', note: 'Box 20 of all T4A(P) slips. Where box 20 is blank, the total of boxes 14 to 19 is used.' }),
     F(null, '11410', 'Disability benefits included on line 11400', c => c.s('T4AP', '16'), { sub: true }),
-    F(5, '11500', 'Other pensions and superannuation', c => c.s('T4A', '016') + c.s('T4A', '024') + rif(c).pen, { note: 'Includes T4RIF boxes 16 and 22 when 65 or older (or received on a spouse\'s death).' }),
+    F(5, '11500', 'Other pensions and superannuation', c => c.s('T4A', '016') + (pensionSr(c) ? t4aAge(c) : 0) + rif(c).pen, { note: 'Includes T4RIF boxes 16 and 22 when 65 or older (or received on a spouse\'s death).' }),
     I(6, '11600', 'Elected split-pension amount', { req: 'T1032' }),
     I(7, '11700', 'Universal child care benefit (UCCB)', { req: 'RC62' }),
     I(null, '11701', 'UCCB amount designated to a dependant', { sub: true }),
@@ -876,16 +958,16 @@ function buildForms() {
     F(16, '12900', 'Registered retirement savings plan (RRSP) income', c => rrsp(c).inc, { note: 'T4RSP boxes 16, 18, 20, 22, 26, 28 and 34.' }),
     F(17, '12905', 'Taxable first home savings account (FHSA) income', c => c.s('T4FHSA', '22') + c.s('T4FHSA', '26')),
     F(18, '12906', 'Taxable FHSA income – other', c => c.s('T4FHSA', '24') + c.s('T4FHSA', '28')),
-    F(19, '13000', 'Other income', c => c.s('T4A', '018') + c.s('T4A', '028') + rif(c).oth + ['14', '16', '18', '20'].reduce((t, k) => t + c.s('T4ARCA', k), 0)),
+    F(19, '13000', 'Other income', c => sBoxes(c, 'T4A', T4A_OTHER) + (pensionSr(c) ? 0 : t4aAge(c)) + rif(c).oth + ['14', '16', '18', '20'].reduce((t, k) => t + c.s('T4ARCA', k), 0)),
     F(20, '13010', "Taxable scholarships, fellowships, bursaries, and artists' project grants", c => c.s('T4A', '105'), { note: 'Box 105 amounts are exempt for students eligible for the education amount; override if so.' }),
     F(21, null, 'Add lines 1 to 20', c => sum(...['10100','10400','11300','11400','11500','11600','11700','11900','12000','12100','12200','12500','12600','12700','12800','12900','12905','12906','13000','13010'].map(k => c.v('T1.' + k))), { total: true }),
     H('Self-employment income', 10),
-    F(null, '13499', 'Business income – gross', c => c.s('T4A', '048') + c.s('T1204', '82') + c.s('T1204', '84') + c.s('T5013', '118'), { sub: true, req: 'T2125' }),
-    F(22, '13500', 'Business income – net', c => c.v('T1.13499') - c.s('T5013', '118') + c.s('T5013', '116'), { req: 'T2125', note: 'Defaults to gross slip income (T4A 048, T1204) plus T5013 box 116; enter net after expenses.' }),
-    I(null, '13699', 'Professional income – gross', { sub: true }),
-    F(23, '13700', 'Professional income – net', c => c.v('T1.13699')),
-    F(null, '13899', 'Commission income – gross', c => c.s('T4A', '020'), { sub: true }),
-    F(24, '13900', 'Commission income – net', c => c.v('T1.13899')),
+    F(null, '13499', 'Business income – gross', c => (bizType(c) === 'business' ? c.v('T2125.8299') : 0) + c.s('T5013', '118'), { sub: true }),
+    F(22, '13500', 'Business income – net', c => (bizType(c) === 'business' ? c.v('T2125.9946') : 0) + c.s('T5013', '116'), { note: 'From Form T2125 (when the business type is "business") plus T5013 box 116.' }),
+    F(null, '13699', 'Professional income – gross', c => bizType(c) === 'professional' ? c.v('T2125.8299') : 0, { sub: true }),
+    F(23, '13700', 'Professional income – net', c => bizType(c) === 'professional' ? c.v('T2125.9946') : 0),
+    F(null, '13899', 'Commission income – gross', c => bizType(c) === 'commission' ? c.v('T2125.8299') : c.s('T4A', '020'), { sub: true }),
+    F(24, '13900', 'Commission income – net', c => bizType(c) === 'commission' ? c.v('T2125.9946') : c.s('T4A', '020')),
     I(null, '14099', 'Farming income – gross', { sub: true }),
     F(25, '14100', 'Farming income – net', c => c.v('T1.14099') + c.s('T5013', '101')),
     I(null, '14299', 'Fishing income – gross', { sub: true }),
@@ -906,7 +988,7 @@ function buildForms() {
     F(37, '20805', 'FHSA deduction', c => c.s('T4FHSA', '18'), { req: 'S15', note: 'Defaults to T4FHSA box 18. Limited to FHSA participation room ($8,000 plus carryforward); override to deduct less.' }),
     I(null, '20810', 'PRPP employer contributions', { sub: true }),
     I(38, '21000', 'Deduction for elected split-pension amount', { req: 'T1032' }),
-    F(39, '21200', 'Annual union, professional, or like dues', c => c.s('T4', '44')),
+    F(39, '21200', 'Annual union, professional, or like dues', c => c.s('T4', '44') + c.s('UNION', 'amt')),
     I(40, '21300', 'UCCB repayment'),
     I(41, '21400', 'Child care expenses', { req: 'T778' }),
     I(42, '21500', 'Disability supports deduction', { req: 'T929' }),
@@ -916,13 +998,13 @@ function buildForms() {
     I(null, '21999', 'Support payments made – total', { sub: true, req: 'P102' }),
     I(45, '22000', 'Support payments made – allowable deduction'),
     I(46, '22100', 'Carrying charges, interest expenses, and other expenses'),
-    I(47, '22200', 'Deduction for CPP or QPP contributions on self-employment income', { req: 'S8 Part 4' }),
+    F(47, '22200', 'Deduction for CPP or QPP contributions on self-employment income', c => c.v('S8.SE12'), { req: 'S8' }),
     F(48, '22215', 'Deduction for CPP or QPP enhanced contributions on employment income', c => c.v('S8.L28'), { req: 'S8' }),
     I(49, '22400', 'Exploration and development expenses', { req: 'T1229' }),
     F(50, '22900', 'Other employment expenses', c => c.s('T4PS', '36') + c.v('T1.EMPX')),
     I(null, null, 'Employment expenses (T777) and other amounts not on a slip', { sub: true, k: 'EMPX', req: 'T777' }),
     I(51, '23100', 'Clergy residence deduction', { req: 'T1223' }),
-    F(52, '23200', 'Other deductions', c => rrsp(c).neg + rif(c).neg + c.v('T1.ODED'), { note: 'Includes negative T4RSP box 28 and T4RIF box 22 amounts.' }),
+    F(52, '23200', 'Other deductions', c => rrsp(c).neg + rif(c).neg + c.s('T4A', '201') + c.v('T1.ODED'), { note: 'Includes negative T4RSP box 28 and T4RIF box 22 amounts, and T4A box 201 repayments.' }),
     I(null, null, 'Other deductions not on a slip', { sub: true, k: 'ODED' }),
     F(53, '23300', 'Add lines 35 to 52', c => sum(...['20700','20800','20805','21000','21200','21300','21400','21500','21700','21900','22000','22100','22200','22215','22400','22900','23100','23200'].map(k => c.v('T1.' + k))), { total: true }),
     F(54, '23400', 'Net income before adjustments (line 34 minus line 53)', c => c.v('T1.L34') - c.v('T1.23300'), { total: true }),
@@ -940,7 +1022,8 @@ function buildForms() {
     I(64, '25395', 'Capital gains deduction for qualifying business transfer', { req: 'T2048' }),
     I(65, '25400', 'Capital gains deduction', { req: 'T657' }),
     I(66, '25500', 'Northern residents deductions', { req: 'T2222' }),
-    I(67, '25600', 'Additional deductions'),
+    F(67, '25600', 'Additional deductions', c => c.s('T4A', '196') + c.v('T1.ADDD'), { note: 'T4A box 196 is deductible only above the scholarship exemption; override if part is exempt.' }),
+    I(null, null, 'Other additional deductions', { sub: true, k: 'ADDD' }),
     F(68, '25700', 'Add lines 58 to 67', c => sum(...['24400','24900','25000','25100','25200','25300','25395','25400','25500','25600'].map(k => c.v('T1.' + k))), { total: true }),
     F(69, '26000', 'Taxable income (line 57 minus line 68; if negative, enter "0")', c => pos(c.v('T1.L57') - c.v('T1.25700')), { total: true, key: true }),
 
@@ -966,7 +1049,7 @@ function buildForms() {
     F(85, null, 'Amount from line 84', c => c.v('T1.L84')),
     H('Base CPP or QPP contributions', 2),
     F(86, '30800', 'Through employment income', c => c.v('S8.L25'), { req: 'S8' }),
-    I(87, '31000', 'On self-employment income and other earnings', { req: 'S8' }),
+    F(87, '31000', 'On self-employment income and other earnings', c => c.v('S8.SE11'), { req: 'S8' }),
     H('Employment insurance premiums', 2),
     F(88, '31200', 'Through employment', c => Math.min(c.v('T2204.L16'), C.eiMaxPremium)),
     I(89, '31217', 'On self-employment and other eligible earnings', { req: 'S13' }),
@@ -987,7 +1070,8 @@ function buildForms() {
     I(104, '32400', 'Tuition amount transferred from a child or grandchild'),
     I(105, '32600', 'Amounts transferred from your spouse or common-law partner', { req: 'S2' }),
     F(106, null, 'Add lines 101 to 105', c => sum(...['L101','31900','32300','32400','32600'].map(k => c.v('T1.' + k))), { total: true }),
-    I(107, '33099', 'Medical expenses for self, spouse, and dependent children under 18'),
+    F(107, '33099', 'Medical expenses for self, spouse, and dependent children under 18', c => c.s('T4A', '135') + c.v('T1.MED'), { note: 'Includes T4A box 135 private health plan premiums.' }),
+    I(null, null, 'Medical expenses from receipts', { sub: true, k: 'MED' }),
     F(108, null, 'Amount from line 23600 × 3%', c => c.v('T1.23600') * 0.03),
     F(109, null, 'Lesser of $2,834 or line 108', c => Math.min(c.v('T1.L108'), C.medicalThreshold)),
     F(110, null, 'Line 107 minus line 109 (if negative, enter "0")', c => pos(c.v('T1.33099') - c.v('T1.L109'))),
@@ -1032,7 +1116,7 @@ function buildForms() {
 
     H('Step 6 – Refund or balance owing'),
     F(143, null, 'Amount from line 42000', c => c.v('T1.42000')),
-    I(144, '42100', 'CPP contributions payable on self-employment income', { req: 'S8' }),
+    F(144, '42100', 'CPP contributions payable on self-employment income', c => c.v('S8.SE10'), { req: 'S8' }),
     I(145, '42120', 'EI premiums payable on self-employment income', { req: 'S13' }),
     F(146, '42200', 'Social benefits repayment', c => c.v('T1.23500')),
     F(147, '42800', 'Provincial or territorial tax', c => c.v('ON428.L90'), { req: 'ON428' }),
@@ -1319,6 +1403,22 @@ function buildForms() {
     F(22, null, 'Required second additional contributions (line 4 × 4%)', c => c.v('S8.L4') * C.cppSecondAddRate),
     F(23, null, 'Line 21 minus line 22 (if negative, enter "0")', c => pos(c.v('S8.L21') - c.v('S8.L22'))),
     F(24, '44800', 'CPP overpayment (line 20 plus line 23)', c => c.v('S8.L20') + c.v('S8.L23'), { total: true, k: 'L24' }),
+    H('Part 5 – Contributions on self-employment income'),
+    F('SE1', null, 'Net self-employment income (lines 13500, 13700, 13900, 14100, 14300; losses as 0)', c => pos(sum(...['13500','13700','13900','14100','14300'].map(k => c.v('T1.' + k)))), { k: 'SE1' }),
+    F('SE2', null, 'Pensionable employment earnings (line 2)', c => c.v('S8.L2'), { k: 'SE2' }),
+    F('SE3', null, 'Total pensionable earnings (SE1 plus SE2)', c => c.v('S8.SE1') + c.v('S8.SE2'), { k: 'SE3' }),
+    F('SE4', null, 'Self-employment earnings for base and first additional contributions', c => {
+      const B = c.v('S8.B'), E = c.v('S8.E');
+      return c.v('S8.SE1') > 0 ? pos(pos(Math.min(c.v('S8.SE3'), B) - E) - pos(Math.min(c.v('S8.SE2'), B) - E)) : 0; }, { k: 'SE4' }),
+    F('SE5', null, 'Base contributions on self-employment (SE4 × 9.9%)', c => c.v('S8.SE4') * C.cppBaseRate * 2, { k: 'SE5' }),
+    F('SE6', null, 'First additional contributions on self-employment (SE4 × 2%)', c => c.v('S8.SE4') * C.cppFirstAddRate * 2, { k: 'SE6' }),
+    F('SE7', null, 'Self-employment earnings for second additional contributions', c => {
+      const B = c.v('S8.B'), D = c.v('S8.D');
+      return c.v('S8.SE1') > 0 ? pos(pos(Math.min(c.v('S8.SE3'), D) - B) - pos(Math.min(c.v('S8.SE2'), D) - B)) : 0; }, { k: 'SE7' }),
+    F('SE8', null, 'Second additional contributions on self-employment (SE7 × 8%)', c => c.v('S8.SE7') * C.cppSecondAddRate * 2, { k: 'SE8' }),
+    F('SE10', '42100', 'CPP contributions payable on self-employment (SE5 + SE6 + SE8)', c => c.v('S8.SE5') + c.v('S8.SE6') + c.v('S8.SE8'), { k: 'SE10', total: true }),
+    F('SE11', '31000', 'Base contributions credit: half of SE5', c => c.v('S8.SE5') / 2, { k: 'SE11' }),
+    F('SE12', '22200', 'Deduction: the other half of SE5, plus SE6 and SE8', c => c.v('S8.SE10') - c.v('S8.SE11'), { k: 'SE12' }),
     H('Amounts for your return'),
     F(25, '30800', 'Base CPP contributions (lesser of line 9 and line 11)', c => Math.min(c.v('S8.L9'), c.v('S8.L11')), { k: 'L25' }),
     F(26, null, 'First additional contributions (lesser of line 10 and line 12)', c => Math.min(c.v('S8.L10'), c.v('S8.L12'))),
@@ -1327,7 +1427,7 @@ function buildForms() {
   ]};
 
   const S9 = { id: 'S9', title: 'Schedule 9 – Donations and Gifts', color: 'blue', rows: [
-    F(1, null, 'Donations to registered charities and other qualified donees', c => c.s('DON', 'amt')),
+    F(1, null, 'Donations to registered charities and other qualified donees', c => c.s('DON', 'amt') + c.s('T4A', '046'), { note: 'Donation receipts plus T4A box 046.' }),
     I(2, '32900', 'Donations to government entities'),
     I(3, '33300', 'Donations to registered universities outside Canada'),
     I(4, '33400', 'Donations to the United Nations and certain foreign charities'),
@@ -1520,7 +1620,58 @@ function buildForms() {
     F(21, null, 'Estimated Ontario Trillium Benefit, July 2026 to June 2027', c => c.v('ONBEN.L12') + c.v('ONBEN.L17') + c.v('ONBEN.L20'), { total: true, key: true, note: 'An estimate, not part of the refund. CRA calculates it after assessing the return and pays it monthly (or in July if $500 or less). Only one spouse applies for the household.' }),
   ]};
 
-  return [T1, ON428, ON428A, ON479, ONBEN, S3, S6, S7, S8, S9, S11, T2204, FW];
+  const T2125 = { id: 'T2125', title: 'T2125 – Statement of Business or Professional Activities', color: 'blue', rows: [
+    H('Part 3C – Gross business or professional income'),
+    F('3S', null, 'Income reported on slips (T4A box 048, T1204; T4A box 020 for commission income)', c => c.s('T4A', '048') + c.s('T1204', '82') + c.s('T1204', '84') + (bizType(c) === 'commission' ? c.s('T4A', '020') : 0), { k: '3S', sub: true }),
+    I('3O', null, 'Other sales, commissions, or fees from your records (not on slips)', { k: '3O', sub: true }),
+    F('3A', null, 'Gross sales, commissions, or fees (including GST/HST)', c => c.v('T2125.3S') + c.v('T2125.3O'), { k: '3A' }),
+    I('3B', null, 'GST/HST, PST, and returns, allowances, and discounts included in line 3A', { k: '3B' }),
+    F(null, '8000', 'Adjusted gross sales (line 3A minus line 3B)', c => c.v('T2125.3A') - c.v('T2125.3B')),
+    I(null, '8230', 'Other income'),
+    F(null, '8299', 'Gross business or professional income', c => c.v('T2125.8000') + c.v('T2125.8230'), { total: true }),
+    H('Part 4 – Cost of goods sold (if applicable)'),
+    I(null, '8300', 'Opening inventory'), I(null, '8320', 'Purchases during the year'), I(null, '8340', 'Direct wage costs'),
+    I(null, '8360', 'Subcontracts'), I(null, '8450', 'Other costs'), I(null, '8500', 'Closing inventory'),
+    F(null, '8518', 'Cost of goods sold', c => c.v('T2125.8300') + c.v('T2125.8320') + c.v('T2125.8340') + c.v('T2125.8360') + c.v('T2125.8450') - c.v('T2125.8500')),
+    F(null, '8519', 'Gross profit (line 8299 minus line 8518)', c => c.v('T2125.8299') - c.v('T2125.8518'), { total: true }),
+    H('Part 4 – Expenses'),
+    I(null, '8521', 'Advertising'),
+    I(null, null, 'Meals and entertainment (total paid)', { k: 'MEALS', sub: true }),
+    F(null, '8523', 'Meals and entertainment (allowable 50%)', c => 0.5 * c.v('T2125.MEALS')),
+    I(null, '8590', 'Bad debts'), I(null, '8690', 'Insurance'), I(null, '8710', 'Interest and bank charges'),
+    I(null, '8760', 'Business taxes, licences, and memberships'), I(null, '8810', 'Office expenses'), I(null, '8811', 'Office stationery and supplies'),
+    I(null, '8860', 'Professional fees (includes legal and accounting fees)'), I(null, '8871', 'Management and administration fees'),
+    I(null, '8910', 'Rent'), I(null, '8960', 'Repairs and maintenance'), I(null, '9060', 'Salaries, wages, and benefits (including employer contributions)'),
+    I(null, '9180', 'Property taxes'), I(null, '9200', 'Travel expenses'), I(null, '9220', 'Telephone and utilities'),
+    I(null, '9224', 'Fuel costs (except for motor vehicles)'), I(null, '9275', 'Delivery, freight, and express'),
+    H('Motor vehicle expenses (Chart A)', 4),
+    I(null, null, 'Total motor vehicle expenses (fuel, insurance, licence, maintenance, leasing, interest)', { k: 'MV1', sub: true }),
+    I(null, null, 'Kilometres driven to earn business income', { k: 'KMB', sub: true, fmt: 'int' }),
+    I(null, null, 'Total kilometres driven in the year', { k: 'KMT', sub: true, fmt: 'int' }),
+    F(null, '9281', 'Motor vehicle expenses (business portion)', c => c.v('T2125.KMT') > 0 ? c.v('T2125.MV1') * Math.min(1, c.v('T2125.KMB') / c.v('T2125.KMT')) : 0),
+    I(null, '9936', 'Capital cost allowance (CCA)', { note: 'From Area A of Form T2125.' }),
+    I(null, '9270', 'Other expenses'),
+    F(null, '9368', 'Total expenses', c => sum(...['8521','8523','8590','8690','8710','8760','8810','8811','8860','8871','8910','8960','9060','9180','9200','9220','9224','9275','9281','9936','9270'].map(k => c.v('T2125.' + k))), { total: true }),
+    F(null, '9369', 'Net income (loss) before adjustments (line 8519 minus line 9368)', c => c.v('T2125.8519') - c.v('T2125.9368'), { total: true }),
+    H('Part 5 – Your net income (loss)'),
+    F('P1', null, 'Your percentage of the business (100% unless a partnership)', c => (c.m.bizShare === '' || c.m.bizShare == null ? 100 : +c.m.bizShare) / 100, { k: 'P1', fmt: 'pct' }),
+    F('P2', null, 'Your share of line 9369', c => c.v('T2125.9369') * c.v('T2125.P1'), { k: 'P2' }),
+    I(null, '9943', 'Other amounts deductible from your share of net partnership income'),
+    F('P3', null, 'Net income (loss) after adjustments', c => c.v('T2125.P2') - c.v('T2125.9943'), { k: 'P3' }),
+    H('Part 7 – Business-use-of-home expenses'),
+    I('H1', null, 'Heat', { k: 'H1' }), I('H2', null, 'Electricity', { k: 'H2' }), I('H3', null, 'Insurance', { k: 'H3' }),
+    I('H4', null, 'Maintenance', { k: 'H4' }), I('H5', null, 'Mortgage interest', { k: 'H5' }), I('H6', null, 'Property taxes', { k: 'H6' }),
+    I('H7', null, 'Other expenses (rent, water)', { k: 'H7' }),
+    F('H8', null, 'Total home expenses', c => sum(...['H1','H2','H3','H4','H5','H6','H7'].map(k => c.v('T2125.' + k))), { k: 'H8' }),
+    I('H9', null, 'Business-use percentage of the home (%)', { k: 'H9', fmt: 'int' }),
+    F('H10', null, 'Business portion (line H8 × line H9 %)', c => c.v('T2125.H8') * Math.min(100, c.v('T2125.H9')) / 100, { k: 'H10' }),
+    I('H11', null, 'Business-use-of-home expenses carried forward from 2024', { k: 'H11' }),
+    F(null, '9945', 'Allowable business-use-of-home expenses (cannot create or increase a loss)', c => Math.min(c.v('T2125.H10') + c.v('T2125.H11'), pos(c.v('T2125.P3')))),
+    F('H12', null, 'Amount carried forward to 2026', c => c.v('T2125.H10') + c.v('T2125.H11') - c.v('T2125.9945'), { k: 'H12' }),
+    F(null, '9946', 'Your net income (loss) (line P3 minus line 9945)', c => c.v('T2125.P3') - c.v('T2125.9945'), { total: true, key: true }),
+  ]};
+
+  return [T1, T2125, ON428, ON428A, ON479, ONBEN, S3, S6, S7, S8, S9, S11, T2204, FW];
 }
 
 const FORMS = buildForms();
@@ -1548,11 +1699,11 @@ const canon = k => ALIAS[k] || k;
 /* ------------------------------------------------------------------ */
 function blankState() {
   return {
-    v: 1,
+    v: 2,
     meta: { clientName: '', taxYear: 2025, birthYear: '', dtc: false, hasSpouse: false,
             spouseNetIncome: 0, spouseWorkingIncome: 0, spouseClaim: false, spouseInfirm: false, spouseDTC: false,
             dependantClaim: false, dependantNetIncome: 0, family: false, cwbEligible: true,
-            onChildren: 0, onImpaired: 0, notes: '', rifSpouseDeath: false, spouse70: false, northern: false, studentRes: false },
+            onChildren: 0, onImpaired: 0, notes: '', rifSpouseDeath: false, spouse70: false, northern: false, studentRes: false, bizName: '', bizIndustry: '', bizType: 'business', bizShare: 100 },
     slips: {},       // slipId -> [{payer, boxes:{box:value}}]
     values: {},      // fullKey -> number (input rows, and overrides of calculated rows)
     notes: {},       // fullKey -> text
@@ -1605,7 +1756,7 @@ function review(state, res) {
   const out = [];
   const v = k => res.value[k];
   Object.values(ROWS).forEach(r => {
-    if (r.req && Math.abs(v(r.fk)) > 0.004 && !['S3','S7','S8','S9','S11','S6','ON428','T4E','T4A(OAS)','T4A(P)','RC210','ON428-A','ON479','T4RSP','T4FHSA','T5007','T5013'].includes(r.req))
+    if (r.req && Math.abs(v(r.fk)) > 0.004 && !['S3','S7','S8','S9','S11','S6','ON428','T4E','T4A(OAS)','T4A(P)','RC210','ON428-A','ON479','T4RSP','T4FHSA','T5007','T5013','T2125'].includes(r.req))
       out.push({ level: 'info', key: r.fk, text: `Line ${r.code || r.n} (${r.label}) has an amount: supporting form ${r.req} is needed.` });
   });
   const ov = Object.keys(state.values || {}).filter(k => ROWS[k] && ROWS[k].calc && state.values[k] !== '' && state.values[k] != null);
@@ -1615,12 +1766,15 @@ function review(state, res) {
   if (v('T1.13010') > 0) out.push({ level: 'info', key: 'T1.13010', text: 'Scholarship income on line 13010: confirm whether the scholarship exemption applies.' });
   if (v('T1.31400') > 0) out.push({ level: 'info', key: 'T1.31400', text: 'Pension income amount claimed: confirm the income is eligible pension income.' });
   if (v('T1.34990') > 0) out.push({ level: 'info', key: 'FW.U4', text: 'Top-up tax credit applies: confirm against the Federal Worksheet chart for line 34990.' });
+  if (v('T2125.H12') > 0.004) out.push({ level: 'info', key: 'T2125.H12', text: `Business-use-of-home expenses of ${fmtMoney(v('T2125.H12'))} are limited this year and carry forward to 2026.` });
+  if (v('S8.SE10') > 0) out.push({ level: 'info', key: 'S8.SE10', text: `CPP on self-employment income: ${fmtMoney(v('S8.SE10'))} is payable with the return (line 42100).` });
   (state.slips.T5008 || []).forEach((s, i) => {
     const b = s.boxes || {};
     if ((+b['21'] || 0) > 0 && (b['20'] === undefined || b['20'] === '')) out.push({ level: 'warn', key: 'slip:T5008', text: `T5008 #${i + 1} (${s.payer || 'unnamed'}): no cost in box 20, so the whole proceeds count as a gain. Enter the adjusted cost base.` });
   });
   if (v('T1.14500') > 0 && state.meta.hasSpouse) out.push({ level: 'info', key: 'T1.14500', text: 'Social assistance reported: if married or common-law, it goes on the return of the spouse with the higher net income.' });
   if ((state.slips.T5013 || []).some(s => +(s.boxes || {})['116'])) out.push({ level: 'info', key: 'T1.13500', text: 'T5013 box 116 is on line 13500 (active partner). If the client is not actively involved, move it to line 12200.' });
+  if ((state.slips.UNION || []).length && (state.slips.T4 || []).some(s => +((s.boxes || {})['44']) > 0)) out.push({ level: 'warn', key: 'T1.21200', text: 'Union dues are entered on both a T4 (box 44) and a dues receipt. Line 21200 adds them together, so make sure the receipt is not for the same dues.' });
   if ((state.slips.PTAX || []).length && parseInt(state.meta.birthYear, 10) <= 1961) out.push({ level: 'info', key: 'ONBEN.L2', text: 'Senior homeowner: the Ontario senior homeowners\' property tax grant is also claimed on ON-BEN (up to $500; CRA calculates it).' });
   (state.slips.T4AP || []).forEach((s, i) => {
     const b = s.boxes || {}, parts = ['14','15','16','17','18','19'].reduce((t, k) => t + (+b[k] || 0), 0);
@@ -1634,6 +1788,18 @@ function review(state, res) {
   return out;
 }
 
+// Lines that used to be typed in and are now calculated: move old entries to the new entry lines
+const MOVED = { 'T1.10400': 'T1.OEI', 'T1.12599': 'T1.RG', 'T1.12600': 'T1.RN', 'T1.22900': 'T1.EMPX', 'T1.23200': 'T1.ODED',
+  'T1.25600': 'T1.ADDD', 'T1.33099': 'T1.MED' };
+function migrate(st) {
+  st.values = st.values || {};
+  Object.entries(MOVED).forEach(([from, to]) => {
+    if (st.values[from] !== undefined && st.values[to] === undefined && !(st.v >= 2)) { st.values[to] = st.values[from]; delete st.values[from]; }
+  });
+  st.v = 2;
+  return st;
+}
+
 function fmtMoney(x) {
   if (x == null || isNaN(x)) return '';
   const neg = x < 0; x = Math.abs(x);
@@ -1641,7 +1807,7 @@ function fmtMoney(x) {
   return (neg ? '−$' : '$') + s;
 }
 
-const api = { onPoliticalCredit, rrsp, rif, C, SLIPS, FORMS, ROWS, ALIAS, canon, blankState, evaluate, review, fmtMoney, healthPremium, politicalCredit, bracketCol, r2 };
+const api = { migrate, onPoliticalCredit, rrsp, rif, C, SLIPS, FORMS, ROWS, ALIAS, canon, blankState, evaluate, review, fmtMoney, healthPremium, politicalCredit, bracketCol, r2 };
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
 else root.BenTax = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1670,14 +1836,15 @@ const FORM_BY_ID = Object.fromEntries(T.FORMS.map(f => [f.id, f]));
 const SLIP_BY_ID = Object.fromEntries(T.SLIPS.map(s => [s.id, s]));
 const SLIP_NAV = { T4: 'T4', T4A: 'T4A', T4AP: 'T4A(P)', T4AOAS: 'T4A(OAS)', T4E: 'T4E', T5: 'T5', T5008: 'T5008', T4RSP: 'T4RSP', T4RIF: 'T4RIF', T4FHSA: 'T4FHSA',
   T2202: 'T2202', T5007: 'T5007', T5013: 'T5013', T4PS: 'T4PS', T4ARCA: 'T4A-RCA', T1204: 'T1204', RC210: 'RC210' };
-const RECEIPT_NAV = { DON: 'Donations', RRSPR: 'RRSP contributions', POL: 'Political contributions', RENT: 'Rent (ON-BEN)', PTAX: 'Property tax (ON-BEN)' };
+const RECEIPT_NAV = { DON: 'Donations', RRSPR: 'RRSP contributions', POL: 'Political contributions', UNION: 'Union dues', RENT: 'Rent (ON-BEN)', PTAX: 'Property tax (ON-BEN)' };
 const LIST_HINT = { DON: 'One row per official receipt. The total feeds Schedule 9 line 1.',
   RRSPR: 'One row per receipt, split by contribution period. Totals feed Schedule 7 lines 2 and 3. Do not include contributions already deducted on the 2024 return.',
   POL: 'One row per official receipt. Federal amounts feed line 40900; Ontario amounts feed the ON479 credit.',
+  UNION: 'Receipts for union, professional, or like dues paid in 2025 that are not already in T4 box 44 (for example, professional association fees). Totals feed line 21200.',
   RENT: 'Rent paid in 2025 for a principal residence in Ontario. Feeds ON-BEN.',
   PTAX: 'Property tax paid in 2025 for a principal residence in Ontario. Feeds ON-BEN.' };
 const ALL_SLIP_NAV = Object.assign({}, SLIP_NAV, RECEIPT_NAV);
-const FORM_NAV = { T1: 'T1 Return', ON428: 'ON428 Ontario Tax', ON428A: 'ON428-A LIFT', ON479: 'ON479 Ontario Credits', ONBEN: 'ON-BEN Trillium (est.)', S3: 'Schedule 3', S6: 'Schedule 6', S7: 'Schedule 7', S8: 'Schedule 8', S9: 'Schedule 9', S11: 'Schedule 11', T2204: 'T2204', FW: 'Federal Worksheet' };
+const FORM_NAV = { T1: 'T1 Return', T2125: 'T2125 Business', ON428: 'ON428 Ontario Tax', ON428A: 'ON428-A LIFT', ON479: 'ON479 Ontario Credits', ONBEN: 'ON-BEN Trillium (est.)', S3: 'Schedule 3', S6: 'Schedule 6', S7: 'Schedule 7', S8: 'Schedule 8', S9: 'Schedule 9', S11: 'Schedule 11', T2204: 'T2204', FW: 'Federal Worksheet' };
 
 /* ---------------- storage ---------------- */
 let store, S, res, checks = [];
@@ -1775,6 +1942,7 @@ function refreshSide() {
 
 /* ---------------- navigation ---------------- */
 function go(view, focusKey) {
+  if (store.ui.view !== view) filterQ = '';
   store.ui.view = view; save();
   renderMain(); refreshSide();
   window.scrollTo(0, 0);
@@ -1816,11 +1984,12 @@ function renderForm(m, f) {
   m.append(h('div', { class: 'ptitle' }, h('h1', null, f.title), h('span', { class: 'sp' }),
     h('label', { class: 'tog' }, h('input', { type: 'checkbox', checked: !!store.ui.hideZero, onchange: e => { store.ui.hideZero = e.target.checked; save(); $('#ftable').classList.toggle('hidezero', e.target.checked); refreshForm(); } }), 'Only lines with amounts')));
   m.append(h('div', { class: 'hint' }, 'White cells are entries. Click any calculated amount to override it; the calculated value stays visible underneath.'));
+  m.append(searchBar('Search lines by number or description (e.g. 31260, medical)…', null, applyFormFilter));
   const tb = h('tbody'); const grp = groupOf(f);
   f.rows.forEach((r, i) => {
     if (r.h) { tb.append(h('tr', { class: 'hd', 'data-h': i }, h('td', { colspan: 6 }, r.h))); return; }
     const isInput = !r.calc;
-    const tr = h('tr', { 'data-k': r.fk, 'data-g': grp[r.fk] == null ? '' : grp[r.fk], class: [isInput ? 'input' : 'calc', r.sub ? 'sub' : '', r.total ? 'tot' : '', r.key ? 'key' : ''].join(' ') });
+    const tr = h('tr', { 'data-k': r.fk, 'data-search': [r.n, r.code, r.label, r.req, r.note].filter(x => x != null).join(' ').toLowerCase(), 'data-g': grp[r.fk] == null ? '' : grp[r.fk], class: [isInput ? 'input' : 'calc', r.sub ? 'sub' : '', r.total ? 'tot' : '', r.key ? 'key' : ''].join(' ') });
     const lab = h('td', { class: 'c-d lab' }, r.label);
     if (r.req) lab.append(h('span', { class: 'req', title: 'Supporting form needed when this line has an amount' }, 'REQ: ' + r.req));
     if (r.note) lab.append(h('span', { class: 'hint2' }, r.note));
@@ -1913,6 +2082,7 @@ function refreshForm() {
     }
   });
   $$('tr.hd', table).forEach(tr => tr.classList.toggle('empty', !vis[tr.dataset.h]));
+  applyFormFilter();
 }
 /* ---------------- slips ---------------- */
 function renderSlip(m, id) {
@@ -1923,6 +2093,7 @@ function renderSlip(m, id) {
   if (d.list) return renderList(m, id);
   const list = S.slips[id] || [];
   m.append(h('div', { class: 'hint' }, list.length > 1 ? 'Each slip is a column. Totals feed the forms automatically.' : 'Enter boxes exactly as shown on the slip. Totals feed the forms automatically.'));
+  m.append(searchBar('Search boxes by number, name, or return line (e.g. 107, pension, 13000)…', 'Only boxes with amounts', applySlipFilter));
   const thead = h('thead', null, h('tr', null,
     h('th', { class: 'tot' }, 'Total'), h('th', { class: 'bx' }, ''), h('th', { class: 'ds' }, d.payer),
     ...list.map((s, i) => h('th', { class: 'py' }, h('div', { class: 'payer' },
@@ -1930,10 +2101,10 @@ function renderSlip(m, id) {
       h('button', { title: 'Remove this slip', 'aria-label': 'Remove slip ' + (i + 1), onclick: () => removePayer(id, i) }, '×')))),
     h('th', { class: 'py addcol' }, h('button', { class: 'btn sm', onclick: () => addPayer(id) }, '+ Add'))));
   const tbody = h('tbody');
-  d.boxes.forEach(([bx, desc, f]) => {
-    tbody.append(h('tr', null,
+  d.boxes.forEach(([bx, desc, f, dest]) => {
+    tbody.append(h('tr', { 'data-box': bx, 'data-search': (bx + ' ' + desc + ' ' + (dest || '')).toLowerCase() },
       h('td', { class: 'tot num', 'data-tot': bx }, ''),
-      h('td', { class: 'bx num' }, bx), h('td', { class: 'ds' }, desc),
+      h('td', { class: 'bx num' }, bx), h('td', { class: 'ds' }, desc, dest ? h('span', { class: 'dest' }, '→ ' + dest) : null),
       ...list.map(s => {
         const inp = h('input', { inputmode: 'decimal', 'aria-label': 'Box ' + bx });
         bindNumInput(inp, () => (s.boxes || {})[bx], val => { s.boxes = s.boxes || {}; if (val == null) delete s.boxes[bx]; else s.boxes[bx] = val; }, { fmt: f });
@@ -1944,6 +2115,42 @@ function renderSlip(m, id) {
   m.append(h('div', { class: 'slipwrap' }, h('table', { class: 'stable' }, thead, tbody)));
   if (!list.length) m.append(h('div', { class: 'empty-slip' }, 'No ' + SLIP_NAV[id] + ' slips yet.'));
 }
+let filterQ = '', filterNZ = false;
+function searchBar(placeholder, togLabel, apply) {
+  const inp = h('input', { type: 'search', class: 'srch', id: 'lineSearch', placeholder, value: filterQ, 'aria-label': 'Search lines',
+    oninput: e => { filterQ = e.target.value; apply(); },
+    onkeydown: e => { if (e.key === 'Escape') { e.target.value = ''; filterQ = ''; apply(); } } });
+  const cnt = h('span', { class: 'srch-count', id: 'srchCount' });
+  return h('div', { class: 'srchbar' }, h('span', { class: 'srch-ic', html: '<svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>' }), inp, cnt,
+    togLabel ? h('label', { class: 'tog' }, h('input', { type: 'checkbox', checked: filterNZ, onchange: e => { filterNZ = e.target.checked; apply(); } }), togLabel) : null);
+}
+function matches(text) {
+  const q = filterQ.trim().toLowerCase(); if (!q) return true;
+  return q.split(/\s+/).every(w => text.includes(w.replace(/^line\s*/, '')));
+}
+function applySlipFilter() {
+  const id = (store.ui.view || '').slice(5); let shown = 0, total = 0;
+  $$('.stable tbody tr[data-box]').forEach(tr => {
+    const bx = tr.dataset.box;
+    const has = (S.slips[id] || []).some(s => +((s.boxes || {})[bx]) || 0);
+    const ok = matches(tr.dataset.search) && (!filterNZ || has);
+    tr.hidden = !ok; total++; if (ok) shown++;
+  });
+  const c = $('#srchCount'); if (c) c.textContent = (filterQ || filterNZ) ? `${shown} of ${total}` : '';
+}
+function applyFormFilter() {
+  const table = $('#ftable'); if (!table) return;
+  const active = !!filterQ.trim();
+  const vis = {}; let shown = 0, total = 0;
+  $$('tr[data-k]', table).forEach(tr => {
+    const ok = matches(tr.dataset.search || '');
+    tr.classList.toggle('nomatch', !ok); total++;
+    const hiddenByZero = table.classList.contains('hidezero') && tr.classList.contains('zero') && !tr.classList.contains('ovr') && !tr.classList.contains('noted');
+    if (ok && !hiddenByZero) { shown++; if (tr.dataset.g !== '') vis[tr.dataset.g] = true; }
+  });
+  $$('tr.hd', table).forEach(tr => tr.classList.toggle('nomatch', active && !vis[tr.dataset.h]));
+  const c = $('#srchCount'); if (c) c.textContent = active ? `${shown} of ${total}` : '';
+}
 function refreshSlip() {
   const id = store.ui.view.slice(5); const d = SLIP_BY_ID[id];
   if (d.list) { d.boxes.forEach(([bx]) => { const t = $(`[data-ltot="${bx}"]`); if (t) t.textContent = T.fmtMoney((S.slips[id] || []).reduce((a, s) => a + (+(s.boxes || {})[bx] || 0), 0)); }); $$('.dlist input[inputmode]').forEach(i => i._show && i._show()); return; }
@@ -1953,6 +2160,7 @@ function refreshSlip() {
     td.textContent = f === 'int' || f === 'pct' ? String(+t.toFixed(2)) : plain(t);
   });
   $$('.stable input[inputmode]').forEach(i => i._show && i._show());
+  applySlipFilter();
 }
 function renderList(m, id) {
   const d = SLIP_BY_ID[id], list = S.slips[id] || [];
@@ -2013,6 +2221,13 @@ function renderDetails(m) {
     txt('onImpaired', 'Dependants with an impairment (Ontario tax reduction)', '$544 each.', 'number')));
   dep.append(h('div', { class: 'help', style: 'margin-top:8px;font-size:12px;color:var(--ink3)' }, 'Enter the federal eligible dependant and caregiver amounts directly on T1 lines 30400–30500.'));
   m.append(dep);
+  const sel = h('select', { id: 'm_bizType', onchange: e => { M.bizType = e.target.value; changed(); } },
+    ...[['business', 'Business income (line 13500)'], ['professional', 'Professional income (line 13700)'], ['commission', 'Commission income (line 13900)']]
+      .map(([v, l]) => h('option', { value: v, selected: (M.bizType || 'business') === v }, l)));
+  m.append(h('div', { class: 'card' }, h('h2', null, 'Self-employment (Form T2125)'),
+    h('div', { class: 'fgrid' }, txt('bizName', 'Business name'), txt('bizIndustry', 'Industry code (NAICS)', 'Six-digit code from the T4002 guide.'),
+      h('div', { class: 'fld' }, h('label', { for: 'm_bizType' }, 'Type of income'), sel),
+      txt('bizShare', 'Your percentage of the business (%)', '100 unless the business is a partnership.', 'number'))));
   m.append(h('div', { class: 'card' }, h('h2', null, 'Ontario Trillium Benefit and other details'),
     chk('northern', 'Lived in Northern Ontario on December 31, 2025 (Northern Ontario energy credit)'),
     chk('studentRes', 'Lived in a designated Ontario student residence in 2025'),
@@ -2046,7 +2261,7 @@ function parseReturn(text) {
   const d = JSON.parse(text); const st = d.return || d;
   if (!st || !st.meta || !st.values) throw new Error('bad');
   const base = T.blankState(); st.meta = Object.assign(base.meta, st.meta); st.slips = st.slips || {}; st.notes = st.notes || {};
-  return st;
+  return T.migrate(st);
 }
 function fileName() { return `BenTax 2025 - ${safeName(S.meta.clientName)}.json`; }
 async function writeTo(id) {
@@ -2280,6 +2495,7 @@ function renderAll() { renderTop(); renderStrip(); renderSide(); renderMain(); r
 function init() {
   store = loadStore(); store.ui = store.ui || { view: 'details' };
   if (!store.returns[store.current]) store.current = Object.keys(store.returns)[0];
+  Object.values(store.returns).forEach(T.migrate);
   S = cur(); recompute();
   $('#returnSel').addEventListener('change', e => { store.current = e.target.value; S = cur(); changed(); renderAll(); });
   $('#btnNew').addEventListener('click', newReturn);
@@ -2290,6 +2506,7 @@ function init() {
   document.addEventListener('keydown', e => {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); if (document.activeElement) document.activeElement.blur(); saveFile(e.shiftKey); }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'o') { e.preventDefault(); openFile(); }
+    if (e.key === '/' && !/INPUT|TEXTAREA|SELECT/.test((document.activeElement || {}).tagName || '')) { const sb = $('#lineSearch'); if (sb) { e.preventDefault(); sb.focus(); } }
   });
   window.addEventListener('beforeunload', e => { const f = fileState[store.current]; if (f && f.status === 'dirty' && !handles[store.current]) { e.preventDefault(); e.returnValue = ''; } });
   $('#fileIn').addEventListener('change', e => { if (e.target.files[0]) importFile(e.target.files[0]); e.target.value = ''; });
